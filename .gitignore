@@ -1,0 +1,9 @@
+.env
+.env.*
+logs/
+.cache/
+
+# Python cache files (fallback for any that escape the cache folder)
+__pycache__/
+*.py[cod]
+*$py.class
