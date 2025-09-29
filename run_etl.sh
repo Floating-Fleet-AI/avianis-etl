@@ -20,11 +20,11 @@ fi
 
 # Validate operator
 case "$OPERATOR" in
-    "test"|"thrive"|"thrive-stage")
+    "test"|"jetaccess")
         ;;
     *)
         echo -e "${RED}Error: Unsupported operator '$OPERATOR'${NC}"
-        echo "Supported operators: test, thrive, thrive-stage"
+        echo "Supported operators: test, jetaccess"
         exit 1
         ;;
 esac
