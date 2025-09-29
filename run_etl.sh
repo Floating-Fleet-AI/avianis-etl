@@ -34,11 +34,8 @@ case "$OPERATOR" in
     "test")
         export ENVIRONMENT="test"
         ;;
-    "thrive")
-        export ENVIRONMENT="thrive"
-        ;;
-    "thrive-stage")
-        export ENVIRONMENT="thrive-stage"
+    "jetaccess")
+        export ENVIRONMENT="jetaccess"
         ;;
 esac
 
@@ -67,8 +64,7 @@ usage() {
     echo
     echo "Operators (defaults to 'test' if not specified):"
     echo "  test                    Use test environment"
-    echo "  thrive                  Use thrive environment"
-    echo "  thrive-stage            Use thrive-stage environment"
+    echo "  jetaccess               Use jetaccess environment"
     echo
     echo "Commands:"
     echo "  full                    Run complete ETL pipeline (default)"
