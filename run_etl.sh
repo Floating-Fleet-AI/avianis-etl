@@ -41,13 +41,6 @@ esac
 
 echo -e "${BLUE}Running Avianis ETL for operator: $OPERATOR${NC}"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
 # Check if virtual environment exists and activate it
 if [ -d "venv" ]; then
     echo -e "${BLUE}Activating virtual environment...${NC}"
@@ -68,12 +61,11 @@ usage() {
     echo
     echo "Commands:"
     echo "  full                    Run complete ETL pipeline (default)"
-    echo "  setup                   Run aircraft and crew data loading (setup for new operators)"
+    echo "  setup                   Initial data setup: Load aircraft types, categories, aircraft, and crew (run once for new operators)"
     echo "  aircraft                Load aircraft data only"
-    echo "  crew                    Load crew and personnel data only"
-    echo "  flight-data             Load flight legs and aircraft events"
-    echo "  crew-assignments        Load crew assignments for aircraft"
-    echo "  personnel-events        Load personnel events"
+    echo "  crew                    Load crew and personnel data only"  
+    echo "  flight-data             Load flight legs and crew assignments only"
+    echo "  personnel-events        Load personnel events only"
     echo
     echo "Examples:"
     echo "  $0 test full                         # Run complete ETL for test operator"
@@ -176,9 +168,6 @@ case "${1:-full}" in
         ;;
     "flight-data")
         run_etl "--flight-data-only"
-        ;;
-    "crew-assignments")
-        run_etl "--crew-assignments-only"
         ;;
     "personnel-events")
         run_etl "--personnel-events-only"

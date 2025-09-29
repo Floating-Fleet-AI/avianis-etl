@@ -242,8 +242,6 @@ class AvianisETL:
         logging.info("Running full ETL pipeline...")
         
         try:
-            self.load_aircraft_data()
-            self.load_crew_data()
             self.load_flight_data()  # Now includes crew assignments processing
             self.load_personnel_events()
             
