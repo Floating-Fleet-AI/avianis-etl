@@ -178,12 +178,13 @@ class AvianisETL:
             if flight_data:
                 logging.info(f"Retrieved {len(flight_data)} flight leg records")
                 
-                # Process flight schedules through the complete workflow
+                # Process flight schedules through the complete workflow (including crew assignments)
                 results = self.flight_loader.process_flight_schedules(flight_data)
                 logging.info(f"Flight schedule processing completed: "
                            f"movement_temp={results.get('movement_temp_loaded', 0)}, "
                            f"movement={results.get('movement_loaded', 0)}, "
-                           f"demand={results.get('demand_loaded', 0)}")
+                           f"demand={results.get('demand_loaded', 0)}, "
+                           f"crew_assignments={results.get('crew_assignments_loaded', 0)}")
             else:
                 logging.warning("No flight leg data received from API")
             
@@ -197,45 +198,6 @@ class AvianisETL:
             logging.error(f"Error loading flight data: {e}")
             raise
     
-    def load_crew_assignments(self):
-        """Load crew assignments for aircraft"""
-        logging.info("Starting crew assignments load...")
-        
-        try:
-            # Authenticate first
-            if not self.api_client.authenticate():
-                raise Exception("Failed to authenticate with Avianis API")
-            
-            # Get aircraft list first
-            aircraft_data = self.api_client.get_aircraft()
-            if not aircraft_data:
-                logging.warning("No aircraft data available for crew assignments")
-                return
-            
-            # Determine date range
-            is_initial = self.is_initial_load()
-            if is_initial:
-                start_date, end_date = self.date_manager.get_initial_load_dates()
-            else:
-                start_date, end_date = self.date_manager.get_incremental_load_dates()
-            
-            # Load crew assignments for each aircraft
-            total_assignments = 0
-            for aircraft in aircraft_data:
-                aircraft_id = aircraft.get('id')
-                if aircraft_id:
-                    assignment_data = self.api_client.get_crew_assignment(
-                        aircraft_id, start_date, end_date
-                    )
-                    if assignment_data:
-                        total_assignments += len(assignment_data)
-                        # TODO: Implement crew assignment loader
-            
-            logging.info(f"Retrieved {total_assignments} crew assignment records")
-            
-        except Exception as e:
-            logging.error(f"Error loading crew assignments: {e}")
-            raise
     
     def load_personnel_events(self):
         """Load personnel events"""
@@ -282,8 +244,7 @@ class AvianisETL:
         try:
             self.load_aircraft_data()
             self.load_crew_data()
-            self.load_flight_data()
-            self.load_crew_assignments()
+            self.load_flight_data()  # Now includes crew assignments processing
             self.load_personnel_events()
             
             logging.info("Full ETL pipeline completed successfully")
@@ -303,8 +264,7 @@ def main():
     parser.add_argument('--setup', action='store_true', help='Run setup (aircraft and crew data)')
     parser.add_argument('--aircraft-only', action='store_true', help='Load aircraft data only')
     parser.add_argument('--crew-only', action='store_true', help='Load crew data only')
-    parser.add_argument('--flight-data-only', action='store_true', help='Load flight data only')
-    parser.add_argument('--crew-assignments-only', action='store_true', help='Load crew assignments only')
+    parser.add_argument('--flight-data-only', action='store_true', help='Load flight data and crew assignments only')
     parser.add_argument('--personnel-events-only', action='store_true', help='Load personnel events only')
     
     args = parser.parse_args()
@@ -320,8 +280,6 @@ def main():
             etl.load_crew_data()
         elif args.flight_data_only:
             etl.load_flight_data()
-        elif args.crew_assignments_only:
-            etl.load_crew_assignments()
         elif args.personnel_events_only:
             etl.load_personnel_events()
         else:

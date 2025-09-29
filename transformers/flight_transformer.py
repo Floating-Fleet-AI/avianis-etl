@@ -2,8 +2,8 @@ import logging
 import pandas as pd
 from typing import Dict, List, Set, Optional
 from datetime import datetime
-from sqlalchemy import text
 from data_utils import safe_get, clean_string, safe_int, safe_float, parse_iso_datetime, parse_flight_datetime, generate_stable_id
+from lookup_service import LookupService
 
 
 class FlightTransformer:
@@ -11,114 +11,39 @@ class FlightTransformer:
     
     def __init__(self, db_manager):
         self.db_manager = db_manager
+        self.lookup_service = LookupService(db_manager)
         
-    def get_bulk_crew_lookup(self, crew_names: Set[str]) -> Dict[str, int]:
-        """Get crew ID lookups for a set of crew names"""
-        if not crew_names:
-            return {}
-            
-        try:
-            session = self.db_manager.get_session()
-            
-            # Build query to find crew by full name
-            placeholders = ','.join([':name' + str(i) for i in range(len(crew_names))])
-            query = text(f"""
-                SELECT id, CONCAT(firstname, ' ', lastname) as full_name 
-                FROM crew 
-                WHERE CONCAT(firstname, ' ', lastname) IN ({placeholders})
-            """)
-            
-            # Create parameter dict
-            params = {f'name{i}': name for i, name in enumerate(crew_names)}
-            results = session.execute(query, params).fetchall()
-            
-            crew_lookup = {}
-            for row in results:
-                crew_id, full_name = row
-                crew_lookup[full_name] = crew_id
-            
-            logging.info(f"Found {len(crew_lookup)} crew members from {len(crew_names)} requested")
-            return crew_lookup
-            
-        except Exception as e:
-            logging.error(f"Error in bulk crew lookup: {e}")
-            return {}
-        finally:
-            session.close()
     
-    def get_bulk_airport_lookup(self, airport_codes: Set[str]) -> Dict[str, int]:
-        """Get airport ID lookups for a set of ICAO codes"""
-        if not airport_codes:
-            return {}
-            
-        try:
-            session = self.db_manager.get_session()
-            
-            # Build query to find airports by ICAO code
-            placeholders = ','.join([':icao' + str(i) for i in range(len(airport_codes))])
-            query = text(f"""
-                SELECT id, icaocode 
-                FROM airport 
-                WHERE icaocode IN ({placeholders})
-            """)
-            
-            # Create parameter dict
-            params = {f'icao{i}': code for i, code in enumerate(airport_codes)}
-            results = session.execute(query, params).fetchall()
-            
-            airport_lookup = {}
-            for row in results:
-                airport_id, icao = row
-                airport_lookup[icao] = airport_id
-            
-            logging.info(f"Found {len(airport_lookup)} airports from {len(airport_codes)} requested")
-            return airport_lookup
-            
-        except Exception as e:
-            logging.error(f"Error in bulk airport lookup: {e}")
-            return {}
-        finally:
-            session.close()
-    
-    def get_bulk_aircraft_lookup(self, tail_numbers: Set[str]) -> Dict[str, int]:
-        """Get aircraft ID lookups for a set of tail numbers"""
-        if not tail_numbers:
-            return {}
-            
-        try:
-            session = self.db_manager.get_session()
-            
-            # Build query to find aircraft by tail number
-            placeholders = ','.join([':tail' + str(i) for i in range(len(tail_numbers))])
-            query = text(f"""
-                SELECT id, tailnumber 
-                FROM aircraft 
-                WHERE tailnumber IN ({placeholders})
-            """)
-            
-            # Create parameter dict
-            params = {f'tail{i}': tail for i, tail in enumerate(tail_numbers)}
-            results = session.execute(query, params).fetchall()
-            
-            aircraft_lookup = {}
-            for row in results:
-                aircraft_id, tailnumber = row
-                aircraft_lookup[tailnumber] = aircraft_id
-            
-            logging.info(f"Found {len(aircraft_lookup)} aircraft from {len(tail_numbers)} requested")
-            return aircraft_lookup
-            
-        except Exception as e:
-            logging.error(f"Error in bulk aircraft lookup: {e}")
-            return {}
-        finally:
-            session.close()
-    
-    def extract_crew_info(self, flight: Dict) -> Dict:
-        """Extract PIC and SIC information from flight crew"""
+    def extract_shared_flight_data(self, flight: Dict) -> Dict:
+        """Extract all shared data from a flight record that's needed by both movement and crew assignment processing"""
+        # Basic flight identifiers
+        fms_id = safe_get(flight, 'id')
+        trip_id = safe_get(flight, 'tripID')
+        stable_id = generate_stable_id(fms_id)
+        tail_number = safe_get(flight, 'tailNumber')
+        
+        # Extract all flight times once
+        scheduled_departure = parse_iso_datetime(safe_get(flight, 'scheduledDepartureDateUTC'))
+        scheduled_arrival = parse_iso_datetime(safe_get(flight, 'scheduledArrivalDateUTC'))
+        actual_departure = parse_iso_datetime(safe_get(flight, 'actualDepartureDateUTC'))
+        actual_arrival = parse_iso_datetime(safe_get(flight, 'actualArrivalDateUTC'))
+        out_blocks = parse_iso_datetime(safe_get(flight, 'outOfBlocksUTC'))
+        in_blocks = parse_iso_datetime(safe_get(flight, 'inBlocksUTC'))
+        
+        # Parse create date once
+        create_date_str = safe_get(flight, 'createDate')
+        create_time = None
+        if create_date_str:
+            from data_utils import parse_flight_datetime
+            create_time = parse_flight_datetime(create_date_str)
+        if not create_time:
+            create_time = datetime.utcnow()
+        
+        # Extract crew information once
         crew_list = safe_get(flight, 'crew', [])
         pic_name = None
         sic_name = None
+        crew_members = []
         
         for crew_member in crew_list:
             crew_position = safe_get(crew_member, 'crewPosition', '').lower()
@@ -130,11 +55,144 @@ class FlightTransformer:
                 pic_name = crew_name
             elif crew_position == 'sic':
                 sic_name = crew_name
+            
+            crew_members.append({
+                'name': crew_name,
+                'position': crew_position,
+                'position_id': 1 if crew_position == 'pic' else 2 if crew_position == 'sic' else None
+            })
         
         return {
+            # IDs and basic info
+            'fms_id': fms_id,
+            'trip_id': trip_id,
+            'stable_id': stable_id,
+            'tail_number': tail_number,
+            
+            # Times
+            'scheduled_departure': scheduled_departure,
+            'scheduled_arrival': scheduled_arrival,
+            'actual_departure': actual_departure,
+            'actual_arrival': actual_arrival,
+            'out_blocks': out_blocks,
+            'in_blocks': in_blocks,
+            'create_time': create_time,
+            
+            # Crew information
             'pic_name': pic_name,
-            'sic_name': sic_name
+            'sic_name': sic_name,
+            'crew_members': crew_members,
+            'crew_list': crew_list,
+            
+            # Raw flight data for other fields
+            'raw_flight': flight
         }
+    
+    def build_movement_record(self, shared_data: Dict, lookups: Dict[str, Dict[str, int]]) -> Dict:
+        """Build a movement record from shared flight data and lookups"""
+        flight = shared_data['raw_flight']
+        crew_lookup = lookups.get('crew', {})
+        airport_lookup = lookups.get('airports', {})
+        aircraft_lookup = lookups.get('aircraft', {})
+        
+        # Get airport lookups
+        departure_icao = safe_get(flight, 'departureICAO')
+        arrival_icao = safe_get(flight, 'arrivalICAO')
+        from_airport_id = airport_lookup.get(departure_icao.upper()) if departure_icao else None
+        to_airport_id = airport_lookup.get(arrival_icao.upper()) if arrival_icao else None
+        
+        # Get aircraft ID
+        aircraft_id = aircraft_lookup.get(shared_data['tail_number']) if shared_data['tail_number'] else None
+        
+        # Get crew IDs
+        pic_id = crew_lookup.get(shared_data['pic_name']) if shared_data['pic_name'] else None
+        sic_id = crew_lookup.get(shared_data['sic_name']) if shared_data['sic_name'] else None
+        
+        # Calculate offtime and ontime with 6-minute padding
+        offtime = None
+        ontime = None
+        if shared_data['scheduled_departure']:
+            offtime = shared_data['scheduled_departure'] + pd.Timedelta(minutes=6)
+        if shared_data['scheduled_arrival']:
+            ontime = shared_data['scheduled_arrival'] - pd.Timedelta(minutes=6)
+        
+        # Generate demand ID
+        demand_id = generate_stable_id(shared_data['trip_id']) if shared_data['trip_id'] else shared_data['stable_id']
+        
+        return {
+            'id': shared_data['stable_id'],
+            'demandid': demand_id,
+            'fromairportid': from_airport_id,
+            'toairportid': to_airport_id,
+            'fromfboid': safe_int(safe_get(flight, 'departureFBOHandlerID')),
+            'tofboid': safe_int(safe_get(flight, 'arrivalFBOHandlerID')),
+            'aircraftid': aircraft_id,
+            'outtime': shared_data['scheduled_departure'],
+            'offtime': offtime,
+            'ontime': ontime,
+            'intime': shared_data['scheduled_arrival'],
+            'actualouttime': shared_data['out_blocks'],
+            'actualofftime': shared_data['actual_departure'],
+            'actualontime': shared_data['actual_arrival'],
+            'actualintime': shared_data['in_blocks'],
+            'flighttime': safe_float(safe_get(flight, 'actualFlightTime')),
+            'blocktime': safe_float(safe_get(flight, 'actualBlockTime')),
+            'status': clean_string(safe_get(flight, 'status')),
+            'picid': pic_id,
+            'sicid': sic_id,
+            'fmsversion': None,
+            'fmsid': shared_data['fms_id'],
+            'createtime': shared_data['create_time'],
+            'fromairport': departure_icao,
+            'toairport': arrival_icao,
+            'tailnumber': clean_string(shared_data['tail_number']),
+            'pic': shared_data['pic_name'],
+            'sic': shared_data['sic_name'],
+            'numberpassenger': safe_int(safe_get(flight, 'passengerCount')),
+            'tripnumber': clean_string(safe_get(flight, 'tripNumber')),
+            'isposition': 1 if safe_get(flight, 'isEmpty', False) else 0,
+            'isowner': 1 if safe_get(flight, 'tripRegulatoryType', '') == 'Part 91' else 0,
+            'tripid': shared_data['trip_id'],
+            'tripnumber': safe_int(safe_get(flight, 'tripNumber')),
+        }
+    
+    def build_crew_assignment_records(self, shared_data: Dict, aircraft_id: int, crew_lookup: Dict[str, int]) -> List[Dict]:
+        """Build crew assignment records from shared flight data"""
+        if not shared_data['crew_members'] or not aircraft_id:
+            return []
+        
+        assignments = []
+        for crew_member in shared_data['crew_members']:
+            if crew_member['position_id'] is None:
+                logging.warning(f"Unknown crew position: {crew_member['position']} for crew member {crew_member['name']}")
+                continue
+            
+            # Get crew ID from lookup
+            crew_id = crew_lookup.get(crew_member['name'])
+            if not crew_id:
+                # Skip this assignment if crew not found (will be logged in main loop)
+                continue
+            
+            assignment = {
+                'aircraftid': aircraft_id,
+                'crewid': crew_id,
+                'positionid': crew_member['position_id'],
+                'starttime': shared_data['scheduled_departure'],
+                'endtime': shared_data['scheduled_arrival'],
+                'actualstarttime': shared_data['actual_departure'],
+                'actualendtime': shared_data['actual_arrival'],
+                'fmsversion': None,
+                'fmsid': shared_data['fms_id'],
+                'createtime': shared_data['create_time'],
+                'tailnumber': shared_data['tail_number'],
+                'crewname': crew_member['name'],
+                'pic': shared_data['pic_name'],
+                'sic': shared_data['sic_name']
+            }
+            
+            assignments.append(assignment)
+        
+        return assignments
     
     def collect_lookup_sets(self, flight_data: List[Dict]) -> Dict[str, Set[str]]:
         """Collect all unique values needed for bulk lookups"""
@@ -143,12 +201,12 @@ class FlightTransformer:
         tail_numbers = set()
         
         for flight in flight_data:
-            # Collect crew names
-            crew_info = self.extract_crew_info(flight)
-            if crew_info['pic_name']:
-                crew_names.add(crew_info['pic_name'])
-            if crew_info['sic_name']:
-                crew_names.add(crew_info['sic_name'])
+            # Collect crew names using shared data extraction
+            shared_data = self.extract_shared_flight_data(flight)
+            if shared_data['pic_name']:
+                crew_names.add(shared_data['pic_name'])
+            if shared_data['sic_name']:
+                crew_names.add(shared_data['sic_name'])
             
             # Collect airport ICAO codes
             departure_icao = safe_get(flight, 'departureICAO')
@@ -159,9 +217,8 @@ class FlightTransformer:
                 airport_codes.add(arrival_icao.upper())
             
             # Collect tail numbers
-            tail_number = safe_get(flight, 'tailNumber')
-            if tail_number:
-                tail_numbers.add(tail_number)
+            if shared_data['tail_number']:
+                tail_numbers.add(shared_data['tail_number'])
         
         return {
             'crew_names': crew_names,
@@ -169,18 +226,18 @@ class FlightTransformer:
             'tail_numbers': tail_numbers
         }
     
-    def transform_flight_to_movement_temp(self, flight_data: List[Dict]) -> List[Dict]:
-        """Transform flight data to movement_temp table format"""
+    def transform_flight_data(self, flight_data: List[Dict], lookups: Dict[str, Dict[str, int]]) -> Dict[str, List[Dict]]:
+        """Transform flight data to both movement_temp and crew assignment records"""
         if not flight_data:
-            return []
+            return {'movements': [], 'crew_assignments': []}
         
-        # Collect all lookup values and perform bulk lookups
-        lookup_sets = self.collect_lookup_sets(flight_data)
-        crew_lookup = self.get_bulk_crew_lookup(lookup_sets['crew_names'])
-        airport_lookup = self.get_bulk_airport_lookup(lookup_sets['airport_codes'])
-        aircraft_lookup = self.get_bulk_aircraft_lookup(lookup_sets['tail_numbers'])
+        # Use provided lookups
+        crew_lookup = lookups.get('crew', {})
+        airport_lookup = lookups.get('airports', {})
+        aircraft_lookup = lookups.get('aircraft', {})
         
-        transformed_records = []
+        movement_records = []
+        crew_assignment_records = []
         
         # Track unmatched items for logging
         unmatched_crew = set()
@@ -190,45 +247,30 @@ class FlightTransformer:
         
         for flight in flight_data:
             try:
-                # Extract crew information
-                crew_info = self.extract_crew_info(flight)
-                pic_name = crew_info['pic_name']
-                sic_name = crew_info['sic_name']
+                # Extract all shared data once
+                shared_data = self.extract_shared_flight_data(flight)
                 
-                # Lookup crew IDs and track unmatched
-                pic_id = crew_lookup.get(pic_name) if pic_name else None
-                sic_id = crew_lookup.get(sic_name) if sic_name else None
-                
-                if pic_name and not pic_id:
-                    unmatched_crew.add(pic_name)
-                if sic_name and not sic_id:
-                    unmatched_crew.add(sic_name)
-                
-                # Extract airport information - only use ICAO codes
-                departure_icao = safe_get(flight, 'departureICAO')
-                arrival_icao = safe_get(flight, 'arrivalICAO')
-                
-                from_airport_id = airport_lookup.get(departure_icao.upper()) if departure_icao else None
-                to_airport_id = airport_lookup.get(arrival_icao.upper()) if arrival_icao else None
+                # Track unmatched crew
+                for crew_member in shared_data['crew_members']:
+                    if crew_member['name'] and not crew_lookup.get(crew_member['name']):
+                        unmatched_crew.add(crew_member['name'])
                 
                 # Track unmatched airports
-                if departure_icao and not from_airport_id:
+                departure_icao = safe_get(flight, 'departureICAO')
+                arrival_icao = safe_get(flight, 'arrivalICAO')
+                if departure_icao and not airport_lookup.get(departure_icao.upper()):
                     unmatched_airports.add(departure_icao.upper())
-                if arrival_icao and not to_airport_id:
+                if arrival_icao and not airport_lookup.get(arrival_icao.upper()):
                     unmatched_airports.add(arrival_icao.upper())
                 
-                # Extract aircraft information using tail number
-                tail_number = safe_get(flight, 'tailNumber')
-                aircraft_id = aircraft_lookup.get(tail_number) if tail_number else None
-                
-                # Track unmatched aircraft and skip flight if aircraft not found
-                if tail_number and not aircraft_id:
-                    unmatched_aircraft.add(tail_number)
-                    # Skip this flight and log details
+                # Check aircraft and skip flight if aircraft not found
+                aircraft_id = aircraft_lookup.get(shared_data['tail_number']) if shared_data['tail_number'] else None
+                if shared_data['tail_number'] and not aircraft_id:
+                    unmatched_aircraft.add(shared_data['tail_number'])
                     skipped_flight = {
-                        'fms_id': safe_get(flight, 'id'),
+                        'fms_id': shared_data['fms_id'],
                         'trip_number': safe_get(flight, 'tripNumber'),
-                        'tail_number': tail_number,
+                        'tail_number': shared_data['tail_number'],
                         'route': f"{departure_icao}->{arrival_icao}" if departure_icao and arrival_icao else "Unknown route",
                         'scheduled_departure': safe_get(flight, 'scheduledDepartureDateUTC'),
                         'status': safe_get(flight, 'status')
@@ -236,71 +278,13 @@ class FlightTransformer:
                     skipped_flights.append(skipped_flight)
                     continue  # Skip processing this flight
                 
-                # Extract times - convert to datetime objects
-                scheduled_departure = parse_iso_datetime(safe_get(flight, 'scheduledDepartureDateUTC'))
-                scheduled_arrival = parse_iso_datetime(safe_get(flight, 'scheduledArrivalDateUTC'))
-                actual_departure = parse_iso_datetime(safe_get(flight, 'actualDepartureDateUTC'))
-                actual_arrival = parse_iso_datetime(safe_get(flight, 'actualArrivalDateUTC'))
-                out_blocks = parse_iso_datetime(safe_get(flight, 'outOfBlocksUTC'))
-                in_blocks = parse_iso_datetime(safe_get(flight, 'inBlocksUTC'))
+                # Build movement record using shared data
+                movement_record = self.build_movement_record(shared_data, lookups)
+                movement_records.append(movement_record)
                 
-                # Calculate offtime and ontime with 6-minute padding
-                offtime = None
-                ontime = None
-                if scheduled_departure:
-                    offtime = scheduled_departure + pd.Timedelta(minutes=6)
-                if scheduled_arrival:
-                    ontime = scheduled_arrival - pd.Timedelta(minutes=6)
-                
-                # Generate stable IDs
-                fms_id = safe_get(flight, 'id')
-                trip_id = safe_get(flight, 'tripID')
-                stable_id = generate_stable_id(fms_id)
-                demand_id = generate_stable_id(trip_id) if trip_id else stable_id
-                
-                # Parse create date from flight data
-                create_date_str = safe_get(flight, 'createDate')
-                create_time = parse_flight_datetime(create_date_str) if create_date_str else datetime.utcnow()
-                
-                # Transform fields according to schema mapping
-                record = {
-                    'id': stable_id,
-                    'demandid': demand_id,
-                    'fromairportid': from_airport_id,
-                    'toairportid': to_airport_id,
-                    'fromfboid': safe_int(safe_get(flight, 'departureFBOHandlerID')),
-                    'tofboid': safe_int(safe_get(flight, 'arrivalFBOHandlerID')),
-                    'aircraftid': aircraft_id,
-                    'outtime': scheduled_departure,
-                    'offtime': offtime,
-                    'ontime': ontime,
-                    'intime': scheduled_arrival,
-                    'actualouttime': out_blocks,
-                    'actualofftime': actual_departure,
-                    'actualontime': actual_arrival,
-                    'actualintime': in_blocks,
-                    'flighttime': safe_float(safe_get(flight, 'actualFlightTime')),
-                    'blocktime': safe_float(safe_get(flight, 'actualBlockTime')),
-                    'status': clean_string(safe_get(flight, 'status')),
-                    'picid': pic_id,
-                    'sicid': sic_id,
-                    'fmsversion': None,  # Not available in source data
-                    'fmsid': fms_id,
-                    'createtime': create_time,
-                    'fromairport': departure_icao,
-                    'toairport': arrival_icao,
-                    'tailnumber': clean_string(tail_number),
-                    'pic': pic_name,
-                    'sic': sic_name,
-                    'numberpassenger': safe_int(safe_get(flight, 'passengerCount')),
-                    'tripnumber': clean_string(safe_get(flight, 'tripNumber')),
-                    'isposition': 1 if safe_get(flight, 'isEmpty', False) else 0,
-                    'isowner': 1 if safe_get(flight, 'tripRegulatoryType', '') == 'Part 91' else 0,
-                    'tripid': trip_id,
-                    'tripnumber': safe_int(safe_get(flight, 'tripNumber')),
-                }
-                
-                transformed_records.append(record)
+                # Build crew assignment records using shared data
+                crew_assignments = self.build_crew_assignment_records(shared_data, aircraft_id, crew_lookup)
+                crew_assignment_records.extend(crew_assignments)
                 
             except Exception as e:
                 logging.error(f"Error transforming flight record {safe_get(flight, 'id', 'unknown')}: {e}")
@@ -348,8 +332,12 @@ class FlightTransformer:
         if not unmatched_crew and not unmatched_airports and not unmatched_aircraft:
             logging.info("All crew, airports, and aircraft were successfully matched")
         
-        logging.info(f"Transformed {len(transformed_records)} flight records for movement_temp")
+        logging.info(f"Transformed {len(movement_records)} flight records for movement_temp")
+        logging.info(f"Generated {len(crew_assignment_records)} crew assignment records")
         if skipped_flights:
             logging.info(f"Skipped {len(skipped_flights)} flights due to unmatched aircraft")
         
-        return transformed_records
+        return {
+            'movements': movement_records,
+            'crew_assignments': crew_assignment_records
+        }

@@ -2,11 +2,14 @@ import pandas as pd
 from sqlalchemy import text
 from database import DatabaseManager
 import logging
+import concurrent.futures
 from typing import Optional, Dict, List
 from data_utils import safe_get, clean_string, safe_int, safe_float, parse_iso_datetime, generate_stable_id
 from datetime import datetime
 from .airport_loader import AirportLoader
 from transformers.flight_transformer import FlightTransformer
+from loaders.crew_assignment_loader import CrewAssignmentLoader
+from lookup_service import LookupService
 
 class FlightLoader:
     """Handle loading flight schedule data into movement_temp, movement, and demand tables"""
@@ -15,24 +18,15 @@ class FlightLoader:
         self.db_manager = db_manager
         self.airport_loader = AirportLoader(db_manager)
         self.flight_transformer = FlightTransformer(db_manager)
+        self.crew_assignment_loader = CrewAssignmentLoader(db_manager)
+        self.lookup_service = LookupService(db_manager)
     
     
-    def transform_flight_data_to_movement_temp(self, flight_data: List[Dict]) -> List[Dict]:
-        """Transform flight leg data to movement_temp table format using FlightTransformer"""
-        return self.flight_transformer.transform_flight_to_movement_temp(flight_data)
-    
-    def load_to_movement_temp(self, flight_data: List[Dict]) -> int:
-        """Load flight data to movement_temp table"""
+    def load_to_movement_temp(self, movement_records: List[Dict]) -> int:
+        """Load movement records to movement_temp table"""
         try:
-            if not flight_data:
-                logging.info("No flight data to load")
-                return 0
-            
-            # Transform data
-            transformed_records = self.transform_flight_data_to_movement_temp(flight_data)
-            
-            if not transformed_records:
-                logging.info("No valid flight data after transformation")
+            if not movement_records:
+                logging.info("No movement records to load")
                 return 0
             
             # Clear movement_temp table
@@ -42,7 +36,7 @@ class FlightLoader:
             session.close()
             
             # Convert to DataFrame and load
-            df = pd.DataFrame(transformed_records)
+            df = pd.DataFrame(movement_records)
             
             # Load data into movement_temp (let MySQL auto-increment the id field)
             df.to_sql(
@@ -53,7 +47,7 @@ class FlightLoader:
                 method='multi'
             )
             
-            logging.info(f"Successfully loaded {len(df)} flight records into movement_temp table")
+            logging.info(f"Successfully loaded {len(df)} movement records into movement_temp table")
             return len(df)
             
         except Exception as e:
@@ -163,15 +157,76 @@ class FlightLoader:
         finally:
             session.close()
     
+    def load_crew_assignments(self, crew_assignment_records: List[Dict]) -> int:
+        """Load crew assignment records to crewassignment_temp table"""
+        try:
+            if not crew_assignment_records:
+                logging.info("No crew assignment records to load")
+                return 0
+            
+            # Load crew assignments into crewassignment_temp table
+            loaded_count = self.crew_assignment_loader.reset_and_load_crew_assignments_temp(crew_assignment_records)
+            logging.info(f"Successfully loaded {loaded_count} crew assignment records")
+            return loaded_count
+                
+        except Exception as e:
+            logging.error(f"Error processing crew assignments: {e}")
+            raise
+    
+    def get_flight_date_range(self, flight_data: List[Dict]) -> tuple:
+        """Extract date range from flight data for crew assignment processing"""
+        if not flight_data:
+            return None, None
+        
+        from data_utils import parse_iso_datetime
+        dates = []
+        
+        for flight in flight_data:
+            scheduled_departure = parse_iso_datetime(safe_get(flight, 'scheduledDepartureDateUTC'))
+            if scheduled_departure:
+                dates.append(scheduled_departure.date())
+        
+        if dates:
+            min_date = min(dates)
+            max_date = max(dates)
+            logging.info(f"Flight data date range: {min_date} to {max_date}")
+            return min_date, max_date
+        
+        return None, None
+    
     def process_flight_schedules(self, flight_data: List[Dict]) -> Dict[str, int]:
-        """Complete workflow: load to movement_temp, port to movement, and load qualifying flights to demand"""
+        """Complete workflow: transform once, then load to movement_temp, port to movement, load qualifying flights to demand, and process crew assignments"""
         results = {}
         
         try:
-            # Step 1: Load flight data into movement_temp table
-            logging.info("Step 1: Loading flight data into movement_temp table")
-            temp_count = self.load_to_movement_temp(flight_data)
+            # Step 0: Pre-compute all lookups and transform data once
+            logging.info("Step 0: Pre-computing lookups and transforming flight data")
+            lookup_sets = self.flight_transformer.collect_lookup_sets(flight_data)
+            lookups = self.lookup_service.get_bulk_lookups(
+                crew_names=lookup_sets['crew_names'],
+                aircraft_tail_numbers=lookup_sets['tail_numbers'],
+                airport_codes=lookup_sets['airport_codes']
+            )
+            
+            # Single transformation producing both movement and crew assignment records
+            transformed_data = self.flight_transformer.transform_flight_data(flight_data, lookups)
+            movement_records = transformed_data['movements']
+            crew_assignment_records = transformed_data['crew_assignments']
+            
+            # Step 1: Load movement_temp and crew_assignments in parallel
+            logging.info("Step 1: Loading movement_temp and crew assignments in parallel")
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                # Submit both loading operations to run in parallel
+                movement_future = executor.submit(self.load_to_movement_temp, movement_records)
+                crew_assignment_future = executor.submit(self.load_crew_assignments, crew_assignment_records)
+                
+                # Wait for both to complete
+                temp_count = movement_future.result()
+                crew_assignment_count = crew_assignment_future.result()
+            
             results['movement_temp_loaded'] = temp_count
+            results['crew_assignments_loaded'] = crew_assignment_count
             
             # Step 2: Port data from movement_temp to movement table
             logging.info("Step 2: Porting data from movement_temp to movement table")
@@ -183,7 +238,17 @@ class FlightLoader:
             demand_count = self.load_qualifying_flights_to_demand()
             results['demand_loaded'] = demand_count
             
-            logging.info(f"Flight schedule processing complete: {temp_count} temp, {movement_count} movement, {demand_count} demand records")
+            # Step 4: Transfer crew assignments from temp to target table (create shifts)
+            logging.info("Step 4: Transferring crew assignments from temp to target table")
+            date_range = self.get_flight_date_range(flight_data)
+            if date_range[0] and date_range[1]:
+                crew_shifts_count = self.crew_assignment_loader.transfer_temp_to_target(date_range)
+                results['crew_shifts_loaded'] = crew_shifts_count
+            else:
+                logging.warning("Could not determine date range for crew assignment transfer")
+                results['crew_shifts_loaded'] = 0
+            
+            logging.info(f"Flight schedule processing complete: {temp_count} temp, {movement_count} movement, {demand_count} demand, {crew_assignment_count} crew assignment records, {results.get('crew_shifts_loaded', 0)} crew shifts (single transform + parallel loading + shift aggregation)")
             
             return results
             
