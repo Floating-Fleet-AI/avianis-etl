@@ -12,7 +12,7 @@ from avianis_api import AvianisAPIClient, get_auth_manager
 from data_utils import DateRangeManager
 from loaders.aircraft_loader import AircraftLoader
 from loaders.crew_loader import CrewLoader
-from loaders.flight_schedule_loader import FlightScheduleLoader
+from loaders.flight_loader import FlightLoader
 from database import DatabaseManager
 
 class AvianisETL:
@@ -26,7 +26,7 @@ class AvianisETL:
         self.db_manager = DatabaseManager()
         self.aircraft_loader = AircraftLoader(self.db_manager)
         self.crew_loader = CrewLoader(self.db_manager)
-        self.flight_schedule_loader = FlightScheduleLoader(self.db_manager)
+        self.flight_loader = FlightLoader(self.db_manager)
         self.date_manager = DateRangeManager(self.config)
         
         # Log operator information
@@ -179,7 +179,7 @@ class AvianisETL:
                 logging.info(f"Retrieved {len(flight_data)} flight leg records")
                 
                 # Process flight schedules through the complete workflow
-                results = self.flight_schedule_loader.process_flight_schedules(flight_data)
+                results = self.flight_loader.process_flight_schedules(flight_data)
                 logging.info(f"Flight schedule processing completed: "
                            f"movement_temp={results.get('movement_temp_loaded', 0)}, "
                            f"movement={results.get('movement_loaded', 0)}, "

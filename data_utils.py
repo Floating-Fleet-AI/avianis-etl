@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Tuple, Optional
 import logging
+import hashlib
 
 def format_iso_datetime(dt: datetime) -> str:
     """
@@ -129,3 +130,29 @@ def parse_iso_datetime(iso_string: str) -> Optional[datetime]:
     except Exception as e:
         logging.error(f"Error parsing datetime {iso_string}: {e}")
         return None
+
+def parse_flight_datetime(date_string: str) -> Optional[datetime]:
+    """Parse flight data datetime format like '8/4/2025 8:41:02 PM' to UTC datetime"""
+    if not date_string:
+        return None
+    
+    try:
+        # Handle flight data format: "8/4/2025 8:41:02 PM"
+        dt = datetime.strptime(date_string, '%m/%d/%Y %I:%M:%S %p')
+        return dt
+        
+    except ValueError:
+        # Fallback to ISO parsing
+        return parse_iso_datetime(date_string)
+    except Exception as e:
+        logging.error(f"Error parsing flight datetime {date_string}: {e}")
+        return None
+
+def generate_stable_id(fms_id: str, min_id: int = 100000, max_id: int = 999999) -> int:
+    """Generate stable 6-digit ID using SHA256 for consistent mapping across ETL runs"""
+    # Use SHA256 for better distribution and take first 4 bytes as integer
+    hash_bytes = hashlib.sha256(fms_id.encode('utf-8')).digest()[:4]
+    hash_int = int.from_bytes(hash_bytes, byteorder='big')
+    # Map to 6-digit range (100,000 to 999,999 = 900,000 possible values)
+    range_size = max_id - min_id + 1
+    return (hash_int % range_size) + min_id
