@@ -160,24 +160,24 @@ class AvianisETL:
     def load_flight_data(self):
         """Load flight legs and process them into movement and demand tables"""
         logging.info("Starting flight data load...")
-        
+
         try:
             # Authenticate first
             if not self.api_client.authenticate():
                 raise Exception("Failed to authenticate with Avianis API")
-            
+
             # Determine date range
             is_initial = self.is_initial_load()
             if is_initial:
                 start_date, end_date = self.date_manager.get_initial_load_dates()
             else:
                 start_date, end_date = self.date_manager.get_incremental_load_dates()
-            
+
             # Load flight legs
             flight_data = self.api_client.get_flight_legs(start_date, end_date)
             if flight_data:
                 logging.info(f"Retrieved {len(flight_data)} flight leg records")
-                
+
                 # Process flight schedules through the complete workflow (including crew assignments)
                 results = self.flight_loader.process_flight_schedules(flight_data)
                 logging.info(f"Flight schedule processing completed: "
@@ -185,15 +185,24 @@ class AvianisETL:
                            f"movement={results.get('movement_loaded', 0)}, "
                            f"demand={results.get('demand_loaded', 0)}, "
                            f"crew_assignments={results.get('crew_assignments_loaded', 0)}")
+
+                # Populate crew qualifications from flight data (only on initial load)
+                if is_initial:
+                    logging.info("Initial load detected - populating crew qualifications from flight data")
+                    qual_results = self.crew_loader.populate_crew_qualifications_from_flight_data()
+                    logging.info(f"Crew qualifications populated: "
+                               f"PIC={qual_results.get('pic_qualifications', 0)}, "
+                               f"SIC={qual_results.get('sic_qualifications', 0)}, "
+                               f"Total={qual_results.get('total_qualifications', 0)}")
             else:
                 logging.warning("No flight leg data received from API")
-            
+
             # Load aircraft events
             event_data = self.api_client.get_aircraft_events(start_date, end_date)
             if event_data:
                 logging.info(f"Retrieved {len(event_data)} aircraft event records")
                 # TODO: Implement aircraft event loader
-            
+
         except Exception as e:
             logging.error(f"Error loading flight data: {e}")
             raise
