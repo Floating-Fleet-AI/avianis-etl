@@ -9,10 +9,11 @@ import pandas as pd
 
 from config import Config
 from avianis_api import AvianisAPIClient, get_auth_manager
-from data_utils import DateRangeManager
+from data_utils import DateRangeManager, parse_iso_datetime
 from loaders.aircraft_loader import AircraftLoader
 from loaders.crew_loader import CrewLoader
 from loaders.flight_loader import FlightLoader
+from loaders.crew_events_loader import CrewEventsLoader
 from database import DatabaseManager
 
 class AvianisETL:
@@ -27,6 +28,7 @@ class AvianisETL:
         self.aircraft_loader = AircraftLoader(self.db_manager)
         self.crew_loader = CrewLoader(self.db_manager)
         self.flight_loader = FlightLoader(self.db_manager)
+        self.crew_events_loader = CrewEventsLoader(self.db_manager)
         self.date_manager = DateRangeManager(self.config)
         
         # Log operator information
@@ -72,19 +74,35 @@ class AvianisETL:
             return count > 0
         except Exception:
             return False
-    
-    def is_initial_load(self) -> bool:
-        """Determine if this is an initial load based on table data"""
-        # Check if key tables have data
-        tables_to_check = ['aircraft', 'crew']
-        
-        for table in tables_to_check:
-            if self.check_table_exists(table):
-                logging.info(f"Table {table} has data, running incremental load")
-                return False
-        
-        logging.info("Tables appear empty, running initial load")
-        return True
+
+    def get_load_context(self, table_name: str = None) -> tuple:
+        """
+        Get load context including whether it's initial load and date range
+
+        Args:
+            table_name: Specific table to check. If None, checks default tables (aircraft, crew)
+
+        Returns:
+            Tuple of (is_initial, start_date, end_date)
+        """
+        # Determine if this is an initial load
+        if table_name:
+            # Check specific table
+            has_data = self.check_table_exists(table_name)
+            if has_data:
+                logging.info(f"Table {table_name} has data, running incremental load")
+                is_initial = False
+            else:
+                logging.info(f"Table {table_name} is empty, running initial load")
+                is_initial = True
+
+        # Get date range based on load type
+        if is_initial:
+            start_date, end_date = self.date_manager.get_initial_load_dates()
+        else:
+            start_date, end_date = self.date_manager.get_incremental_load_dates()
+
+        return is_initial, start_date, end_date
     
     def load_aircraft_data(self):
         """Load aircraft and related reference data"""
@@ -129,22 +147,22 @@ class AvianisETL:
     def load_crew_data(self):
         """Load crew and personnel data"""
         logging.info("Starting crew data load...")
-        
+
         try:
             # Authenticate first
             if not self.api_client.authenticate():
                 raise Exception("Failed to authenticate with Avianis API")
-            
-            # Determine date range
-            is_initial = self.is_initial_load()
+
+            # Get load context based on crew table
+            is_initial, _, _ = self.get_load_context('crew')
             last_activity_date = self.date_manager.get_last_activity_date(is_initial)
-            
+
             # Load duty categories first
             duty_data = self.api_client.get_duty_categories()
             if duty_data:
                 self.crew_loader.reset_and_load_duty_categories(duty_data)
                 logging.info(f"Loaded {len(duty_data)} duty category records")
-            
+
             # Load personnel data
             personnel_data = self.api_client.get_personnel(last_activity_date)
             if personnel_data:
@@ -152,7 +170,7 @@ class AvianisETL:
                 logging.info(f"Loaded {len(personnel_data)} crew records")
             else:
                 logging.warning("No personnel data received from API")
-            
+
         except Exception as e:
             logging.error(f"Error loading crew data: {e}")
             raise
@@ -162,23 +180,16 @@ class AvianisETL:
         logging.info("Starting flight data load...")
 
         try:
-            # Authenticate first
             if not self.api_client.authenticate():
                 raise Exception("Failed to authenticate with Avianis API")
 
-            # Determine date range
-            is_initial = self.is_initial_load()
-            if is_initial:
-                start_date, end_date = self.date_manager.get_initial_load_dates()
-            else:
-                start_date, end_date = self.date_manager.get_incremental_load_dates()
+            # Get load context based on movement table
+            is_initial, start_date, end_date = self.get_load_context('movement')
 
-            # Load flight legs
             flight_data = self.api_client.get_flight_legs(start_date, end_date)
             if flight_data:
                 logging.info(f"Retrieved {len(flight_data)} flight leg records")
 
-                # Process flight schedules through the complete workflow (including crew assignments)
                 results = self.flight_loader.process_flight_schedules(flight_data)
                 logging.info(f"Flight schedule processing completed: "
                            f"movement_temp={results.get('movement_temp_loaded', 0)}, "
@@ -186,7 +197,6 @@ class AvianisETL:
                            f"demand={results.get('demand_loaded', 0)}, "
                            f"crew_assignments={results.get('crew_assignments_loaded', 0)}")
 
-                # Populate crew qualifications from flight data (only on initial load)
                 if is_initial:
                     logging.info("Initial load detected - populating crew qualifications from flight data")
                     qual_results = self.crew_loader.populate_crew_qualifications_from_flight_data()
@@ -208,29 +218,33 @@ class AvianisETL:
             raise
     
     
-    def load_personnel_events(self):
-        """Load personnel events"""
-        logging.info("Starting personnel events load...")
-        
+    def load_crew_events(self):
+        """Load crew events"""
+        logging.info("Starting crew events load...")
+
         try:
-            # Authenticate first
             if not self.api_client.authenticate():
                 raise Exception("Failed to authenticate with Avianis API")
-            
-            # Determine date range
-            is_initial = self.is_initial_load()
+
+            # Get load context based on crewunavaildate table
+            is_initial, start_date, end_date = self.get_load_context('crewunavaildate')
             last_activity_date = self.date_manager.get_last_activity_date(is_initial)
-            
-            # Load personnel events
+
             event_data = self.api_client.get_personnel_events(last_activity_date)
             if event_data:
-                logging.info(f"Retrieved {len(event_data)} personnel event records")
-                # TODO: Implement personnel event loader
+                logging.info(f"Retrieved {len(event_data)} crew event records")
+                self.crew_events_loader.load_crew_unavailability(event_data, last_activity_date)
+
+                # Convert from ISO format to datetime for availability calculation
+                start_date_dt = parse_iso_datetime(start_date)
+                end_date_dt = parse_iso_datetime(end_date)
+
+                self.crew_events_loader.calculate_crew_availability(start_date_dt, end_date_dt)
             else:
-                logging.warning("No personnel event data received from API")
-            
+                logging.warning("No crew event data received from API")
+
         except Exception as e:
-            logging.error(f"Error loading personnel events: {e}")
+            logging.error(f"Error loading crew events: {e}")
             raise
     
     def run_setup(self):
@@ -252,7 +266,7 @@ class AvianisETL:
         
         try:
             self.load_flight_data()  # Now includes crew assignments processing
-            self.load_personnel_events()
+            self.load_crew_events()
             
             logging.info("Full ETL pipeline completed successfully")
             
@@ -272,7 +286,7 @@ def main():
     parser.add_argument('--aircraft-only', action='store_true', help='Load aircraft data only')
     parser.add_argument('--crew-only', action='store_true', help='Load crew data only')
     parser.add_argument('--flight-data-only', action='store_true', help='Load flight data and crew assignments only')
-    parser.add_argument('--personnel-events-only', action='store_true', help='Load personnel events only')
+    parser.add_argument('--crew-events-only', action='store_true', help='Load crew events only')
     
     args = parser.parse_args()
     
@@ -287,8 +301,8 @@ def main():
             etl.load_crew_data()
         elif args.flight_data_only:
             etl.load_flight_data()
-        elif args.personnel_events_only:
-            etl.load_personnel_events()
+        elif args.crew_events_only:
+            etl.load_crew_events()
         else:
             etl.run_full_etl()
             

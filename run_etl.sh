@@ -169,8 +169,8 @@ case "${1:-full}" in
     "flight-data")
         run_etl "--flight-data-only"
         ;;
-    "personnel-events")
-        run_etl "--personnel-events-only"
+    "crew-events")
+        run_etl "--crew-events-only"
         ;;
     *)
         echo -e "${RED}Error: Unknown command '$1'${NC}"
