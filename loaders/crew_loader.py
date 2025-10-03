@@ -289,19 +289,19 @@ class CrewLoader:
                     1 as positionid,
                     1 as isactive,
                     ROW_NUMBER() OVER (PARTITION BY picid ORDER BY aircrafttypeid) as typecount,
-                    MIN(createtime) as createtime,
+                    createtime,
                     'avianis_etl' as updatedby
                 FROM (
                     SELECT DISTINCT
                         c.id as picid,
-                        CASE WHEN ac.aircrafttypeid IN (1,2) THEN 1 ELSE ac.aircrafttypeid END as aircrafttypeid,
-                        m.createtime
+                        ac.aircrafttypeid,
+                        SYSDATE() as createtime
                     FROM movement m
                     LEFT JOIN aircraft ac ON m.aircraftid = ac.id
                     LEFT JOIN crew c ON m.pic = c.name
                     WHERE m.pic IS NOT NULL
+                    AND c.id IS NOT NULL
                 ) a
-                GROUP BY picid, aircrafttypeid
             """)
 
             pic_result = session.execute(pic_query)
@@ -319,27 +319,21 @@ class CrewLoader:
                     2 as positionid,
                     1 as isactive,
                     ROW_NUMBER() OVER (PARTITION BY sicid ORDER BY aircrafttypeid) as typecount,
-                    MIN(createtime) as createtime,
+                    createtime,
                     'avianis_etl' as updatedby
                 FROM (
                     SELECT DISTINCT
                         c.id as sicid,
-                        c.aircrafttypeid,
-                        c.createtime
-                    FROM (
-                        SELECT DISTINCT
-                            c.id,
-                            CASE WHEN ac.aircrafttypeid IN (1,2) THEN 1 ELSE ac.aircrafttypeid END as aircrafttypeid,
-                            m.createtime
-                        FROM movement m
-                        LEFT JOIN aircraft ac ON m.aircraftid = ac.id
-                        LEFT JOIN crew c ON m.sic = c.name
-                        WHERE m.sic IS NOT NULL
-                    ) c
-                    LEFT JOIN crewqualification cq ON c.id = cq.crewid AND c.aircrafttypeid = cq.aircrafttypeid
-                    WHERE cq.id IS NULL
+                        ac.aircrafttypeid,
+                        SYSDATE() as createtime
+                    FROM movement m
+                    LEFT JOIN aircraft ac ON m.aircraftid = ac.id
+                    LEFT JOIN crew c ON m.sic = c.name
+                    LEFT JOIN crewqualification cq ON c.id = cq.crewid AND ac.aircrafttypeid = cq.aircrafttypeid
+                    WHERE m.sic IS NOT NULL
+                    AND c.id IS NOT NULL
+                    AND cq.id IS NULL
                 ) a
-                GROUP BY sicid, aircrafttypeid
             """)
 
             sic_result = session.execute(sic_query)
