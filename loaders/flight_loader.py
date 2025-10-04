@@ -104,7 +104,7 @@ class FlightLoader:
             session.execute(text("DELETE FROM demand"))
             
             # Insert qualifying flights into demand table using movement_temp data
-            # Criteria: isEmpty=false (isposition=0) and passengerCount > 2
+            # Criteria: isEmpty=false (isposition=0) and passengerCount > 0
             demand_query = text("""
                 INSERT INTO demand (
                     id, legnumber, tripnumber, requestaircrafttypeid, requestaircraftcategoryid,

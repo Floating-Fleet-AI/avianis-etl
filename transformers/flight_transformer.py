@@ -116,12 +116,11 @@ class FlightTransformer:
         if shared_data['scheduled_arrival']:
             ontime = shared_data['scheduled_arrival'] - pd.Timedelta(minutes=6)
         
-        # Generate demand ID
-        demand_id = generate_stable_id(shared_data['trip_id']) if shared_data['trip_id'] else shared_data['stable_id']
-        
+        id =shared_data['stable_id']
+        isEmpty = safe_get(flight, 'isEmpty', False)
         return {
-            'id': shared_data['stable_id'],
-            'demandid': demand_id,
+            'id': id, 
+            'demandid': id if not isEmpty else None,
             'fromairportid': from_airport_id,
             'toairportid': to_airport_id,
             'fromfboid': safe_int(safe_get(flight, 'departureFBOHandlerID')),
@@ -150,7 +149,7 @@ class FlightTransformer:
             'sic': shared_data['sic_name'],
             'numberpassenger': safe_int(safe_get(flight, 'passengerCount')),
             'tripnumber': clean_string(safe_get(flight, 'tripNumber')),
-            'isposition': 1 if safe_get(flight, 'isEmpty', False) else 0,
+            'isposition': 1 if isEmpty else 0,
             'isowner': 1 if safe_get(flight, 'tripRegulatoryType', '') == 'Part 91' else 0,
             'tripid': shared_data['trip_id'],
             'tripnumber': safe_int(safe_get(flight, 'tripNumber')),
