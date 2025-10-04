@@ -140,6 +140,32 @@ class AircraftLoader:
             logging.error(f"Error loading aircraft types: {e}")
             raise
     
+    def filter_aircraft(self, aircraft_data: List[Dict]) -> List[Dict]:
+        """Filter for active and managed aircraft only"""
+        filtered = [
+            aircraft for aircraft in aircraft_data
+            if safe_get(aircraft, 'active') is True and safe_get(aircraft, 'managed') is True
+        ]
+        logging.info(f"Filtered {len(filtered)} active and managed aircraft from {len(aircraft_data)} total aircraft")
+        return filtered
+
+    def filter_model_data(self, model_data: List[Dict], filtered_aircraft: List[Dict]) -> List[Dict]:
+        """Filter model_data to only include types that exist in filtered_aircraft"""
+        # Extract unique aircraft types from filtered aircraft
+        unique_aircraft_types = set()
+        for aircraft in filtered_aircraft:
+            aircraft_type = clean_string(safe_get(aircraft, 'aircraftType'))
+            if aircraft_type:
+                unique_aircraft_types.add(aircraft_type)
+
+        # Filter model_data by matching names
+        filtered_models = [
+            model for model in model_data
+            if clean_string(safe_get(model, 'name')) in unique_aircraft_types
+        ]
+        logging.info(f"Filtered {len(filtered_models)} aircraft types from {len(model_data)} total types")
+        return filtered_models
+
     def update_base_airport_ids(self, aircraft_data: List[Dict]) -> Dict[str, int]:
         """Update baseairportid mapping using airport lookup"""
         if not aircraft_data:
@@ -178,21 +204,9 @@ class AircraftLoader:
         if not aircraft_data:
             logging.info("No aircraft data to load")
             return 0
-        
+
         try:
-            # Filter for active and managed aircraft only
-            filtered_aircraft = [
-                aircraft for aircraft in aircraft_data 
-                if safe_get(aircraft, 'active') is True and safe_get(aircraft, 'managed') is True
-            ]
-            
-            if not filtered_aircraft:
-                logging.info("No active and managed aircraft found")
-                return 0
-            
-            # Get base airport ID mappings
             airport_mapping = self.update_base_airport_ids(aircraft_data)
-            
             session = self.db_manager.get_session()
             
             # Reset the table
@@ -202,7 +216,7 @@ class AircraftLoader:
             
             # Transform aircraft data
             transformed_records = []
-            for aircraft in filtered_aircraft:
+            for aircraft in aircraft_data:
                 aircraft_id = self.generate_stable_id(safe_get(aircraft, 'id'))
                 aircraft_type_name = clean_string(safe_get(aircraft, 'aircraftType'))
                 homebase = clean_string(safe_get(aircraft, 'homebase'))
@@ -307,21 +321,24 @@ class AircraftLoader:
         try:
             results = {}
             
-            # Step 1: Load aircraft categories (sorted by capacity from aircraft data)
+            filtered_aircraft = self.filter_aircraft(aircraft_data)
+            if not filtered_aircraft:
+                logging.info("No active and managed aircraft found")
+                return {'categories': 0, 'types': 0, 'type_category_updates': 0, 'aircraft': 0}
+
+            filtered_model_data = self.filter_model_data(model_data, filtered_aircraft)
+
             results['categories'] = self.load_aircraft_categories(category_data, aircraft_data)
-            
-            # Step 2: Load aircraft types (models)
-            results['types'] = self.load_aircraft_types(model_data)
-            
-            # Step 3: Update aircraft types with category relationships
+
+            results['types'] = self.load_aircraft_types(filtered_model_data)
+
             results['type_category_updates'] = self.update_aircraft_type_categories(aircraft_data)
-            
-            # Step 4: Load aircraft
-            results['aircraft'] = self.load_aircraft(aircraft_data)
-            
+
+            results['aircraft'] = self.load_aircraft(filtered_aircraft)
+
             logging.info(f"Aircraft data loading completed: {results}")
             return results
-            
+
         except Exception as e:
             logging.error(f"Error loading aircraft data: {e}")
             raise
