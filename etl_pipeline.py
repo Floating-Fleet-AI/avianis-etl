@@ -15,6 +15,7 @@ from loaders.crew_loader import CrewLoader
 from loaders.flight_loader import FlightLoader
 from loaders.crew_events_loader import CrewEventsLoader
 from database import DatabaseManager
+from sqlalchemy import text
 
 class AvianisETL:
     """Main ETL pipeline for Avianis data"""
@@ -68,11 +69,13 @@ class AvianisETL:
         """Check if a table exists and has data"""
         try:
             session = self.db_manager.get_session()
-            result = session.execute(f"SELECT COUNT(*) FROM {table_name}")
+            result = session.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
             count = result.fetchone()[0]
             session.close()
+            logging.info(f"Table {table_name} has {count} records")
             return count > 0
-        except Exception:
+        except Exception as e:
+            logging.warning(f"Error checking table {table_name}: {e}")
             return False
 
     def get_load_context(self, table_name: str = None) -> tuple:
@@ -239,7 +242,7 @@ class AvianisETL:
                 start_date_dt = parse_iso_datetime(start_date)
                 end_date_dt = parse_iso_datetime(end_date)
 
-                self.crew_events_loader.calculate_crew_availability(start_date_dt, end_date_dt)
+                self.crew_events_loader.calculate_crew_availability(start_date_dt, end_date_dt, is_initial=is_initial)
             else:
                 logging.warning("No crew event data received from API")
 

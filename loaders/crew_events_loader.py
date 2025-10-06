@@ -216,7 +216,7 @@ class CrewEventsLoader:
             logging.error(f"Failed to load crew unavailability: {e}")
             raise
 
-    def calculate_crew_availability(self, start_time: datetime, end_time: datetime, cutoff_hour: int = 12) -> int:
+    def calculate_crew_availability(self, start_time: datetime, end_time: datetime, cutoff_hour: int = 12, is_initial: bool = False) -> int:
         """
         Calculate crew availability based on unavailability data.
 
@@ -224,6 +224,7 @@ class CrewEventsLoader:
             start_time: Start date in format 'YYYY-MM-DD'
             end_time: End date in format 'YYYY-MM-DD'
             cutoff_hour: Hour threshold for end date exclusion (default: 12 noon)
+            is_initial: If True, truncate the entire table. If False, delete only records in date range.
 
         Returns:
             Number of availability records inserted
@@ -232,8 +233,28 @@ class CrewEventsLoader:
 
         session = self.db_manager.get_session()
         try:
+            # Delete existing availability records
+            if is_initial:
+                # Truncate entire table for initial load
+                truncate_query = text("TRUNCATE TABLE crewavaildate")
+                session.execute(truncate_query)
+                logging.info(f"Truncated crewavaildate table (initial load)")
+            else:
+                # Delete only records in the date range for incremental load
+                delete_query = text("""
+                    DELETE FROM crewavaildate
+                    WHERE availdate BETWEEN DATE(:start_time) AND DATE(:end_time)
+                """)
+                delete_result = session.execute(delete_query, {
+                    'start_time': start_time,
+                    'end_time': end_time
+                })
+                deleted_count = delete_result.rowcount
+                logging.info(f"Deleted {deleted_count} existing availability records in date range {start_time} to {end_time}")
+            session.commit()
+
             query = text(f"""
-                INSERT INTO crewavaildate(crewid, availdate, crewname, createtime)
+                INSERT IGNORE INTO crewavaildate(crewid, availdate, crewname, createtime)
                 WITH RECURSIVE numbers AS (
                     SELECT 0 AS day_id
                     UNION ALL
