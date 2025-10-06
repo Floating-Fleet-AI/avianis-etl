@@ -254,7 +254,7 @@ class CrewEventsLoader:
             session.commit()
 
             query = text(f"""
-                INSERT IGNORE INTO crewavaildate(crewid, availdate, crewname, createtime)
+                INSERT INTO crewavaildate(crewid, availdate, crewname, createtime)
                 WITH RECURSIVE numbers AS (
                     SELECT 0 AS day_id
                     UNION ALL
