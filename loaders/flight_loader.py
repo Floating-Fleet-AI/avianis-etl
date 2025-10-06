@@ -139,7 +139,7 @@ class FlightLoader:
                     tripid as fmsid, 
                     createtime
                 FROM movement_temp 
-                WHERE isposition = 0 AND numberpassenger > 0
+                WHERE isposition = 0
             """)
             
             result = session.execute(demand_query)

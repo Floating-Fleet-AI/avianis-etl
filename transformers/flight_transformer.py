@@ -116,11 +116,13 @@ class FlightTransformer:
         if shared_data['scheduled_arrival']:
             ontime = shared_data['scheduled_arrival'] - pd.Timedelta(minutes=6)
         
-        id =shared_data['stable_id']
-        isEmpty = safe_get(flight, 'isEmpty', False)
+        id = shared_data['stable_id']
+        passengerCount = safe_get(flight, 'passengerCount', 0)
+        isEmpty = flight.get('isEmpty') 
+        
         return {
             'id': id, 
-            'demandid': id if not isEmpty else None,
+            'demandid': id if isEmpty is False else None,
             'fromairportid': from_airport_id,
             'toairportid': to_airport_id,
             'fromfboid': safe_int(safe_get(flight, 'departureFBOHandlerID')),
@@ -134,8 +136,8 @@ class FlightTransformer:
             'actualofftime': shared_data['actual_departure'],
             'actualontime': shared_data['actual_arrival'],
             'actualintime': shared_data['in_blocks'],
-            'flighttime': safe_float(safe_get(flight, 'actualFlightTime')),
-            'blocktime': safe_float(safe_get(flight, 'actualBlockTime')),
+            'flighttime': safe_float(safe_get(flight, 'estimatedFlightTime')) ,
+            'blocktime': safe_float(safe_get(flight, 'estimatedBlockTime')),
             'status': clean_string(safe_get(flight, 'status')),
             'picid': pic_id,
             'sicid': sic_id,
@@ -147,9 +149,9 @@ class FlightTransformer:
             'tailnumber': clean_string(shared_data['tail_number']),
             'pic': shared_data['pic_name'],
             'sic': shared_data['sic_name'],
-            'numberpassenger': safe_int(safe_get(flight, 'passengerCount')),
+            'numberpassenger': passengerCount,
             'tripnumber': clean_string(safe_get(flight, 'tripNumber')),
-            'isposition': 1 if isEmpty else 0,
+            'isposition': 1 if isEmpty is True else 0,
             'isowner': 1 if safe_get(flight, 'tripRegulatoryType', '') == 'Part 91' else 0,
             'tripid': shared_data['trip_id'],
             'tripnumber': safe_int(safe_get(flight, 'tripNumber')),
@@ -248,7 +250,7 @@ class FlightTransformer:
             try:
                 # Extract all shared data once
                 shared_data = self.extract_shared_flight_data(flight)
-                
+
                 # Track unmatched crew
                 for crew_member in shared_data['crew_members']:
                     if crew_member['name'] and not crew_lookup.get(crew_member['name']):
