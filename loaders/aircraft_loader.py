@@ -238,7 +238,7 @@ class AircraftLoader:
                     'aircrafttypeid': aircrafttypeid,
                     'maxpax': safe_int(safe_get(aircraft, 'capacity')),
                     'ownername': clean_string(safe_get(aircraft, 'vendorName')),
-                    'operatorid': safe_get(aircraft, 'vendorID'), 
+                    'operatorid': safe_get(aircraft, 'vendorID') or 1, 
                     'baseairportid': baseairportid,
                     'isactive': 1 if safe_get(aircraft, 'active') else 0,
                     'fmsid': safe_get(aircraft, 'id'),  # Store original Avianis ID
