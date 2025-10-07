@@ -28,7 +28,7 @@ class AvianisETL:
         self.db_manager = DatabaseManager()
         self.aircraft_loader = AircraftLoader(self.db_manager)
         self.crew_loader = CrewLoader(self.db_manager)
-        self.flight_loader = FlightLoader(self.db_manager)
+        self.flight_loader = FlightLoader(self.db_manager, self.api_client)
         self.crew_events_loader = CrewEventsLoader(self.db_manager)
         self.date_manager = DateRangeManager(self.config)
         
@@ -193,11 +193,12 @@ class AvianisETL:
             if flight_data:
                 logging.info(f"Retrieved {len(flight_data)} flight leg records")
 
-                results = self.flight_loader.process_flight_schedules(flight_data)
+                results = self.flight_loader.process_flight_schedules(flight_data, is_initial, start_date, end_date)
                 logging.info(f"Flight schedule processing completed: "
                            f"movement_temp={results.get('movement_temp_loaded', 0)}, "
                            f"movement={results.get('movement_loaded', 0)}, "
-                           f"demand={results.get('demand_loaded', 0)}, "
+                           f"demand={results.get('demand_loaded', 0)} "
+                           f"(aircraft_requests={results.get('demand_aircraft_requests_populated', 0)}), "
                            f"crew_assignments={results.get('crew_assignments_loaded', 0)}")
 
                 if is_initial:

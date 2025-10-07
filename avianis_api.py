@@ -173,6 +173,10 @@ class AvianisAPIClient:
         }
         return self.get_data('/aircraftEvent', params)
     
+    def get_trip(self, trip_id: str) -> Optional[Dict]:
+        """Fetch trip details by trip ID"""
+        return self.get_data(f'/trip/{trip_id}/Itinerary?includeCancelledLegs=false', api_version='v2')
+
     def get_flight_legs(self, start_date: str, end_date: str) -> Optional[List[Dict]]:
         """Fetch flight legs in a date range with pagination"""
         all_flights = []
