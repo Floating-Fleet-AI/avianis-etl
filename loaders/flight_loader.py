@@ -104,7 +104,7 @@ class FlightLoader:
             # Clear the movement table based on load type
             self._clear_table(session, 'movement', is_initial, start_date, end_date, 'outtime')
 
-            # Copy data from movement_temp to movement (excluding the auto-increment id)
+            # Upsert data from movement_temp to movement
             copy_query = text("""
                 INSERT INTO movement (
                     id, demandid, fromairportid, toairportid, fromfboid, tofboid, aircraftid,
@@ -119,16 +119,50 @@ class FlightLoader:
                     actualontime, actualintime, flighttime, blocktime, status, picid, sicid,
                     fmsversion, fmsid, createtime, pic, sic, fromairport, toairport,
                     tailnumber, isowner, isaclocked, iscrewlocked, isposition, tripnumber, numberpassenger
-                FROM movement_temp
+                FROM movement_temp AS new
+                ON DUPLICATE KEY UPDATE
+                    demandid = new.demandid,
+                    fromairportid = new.fromairportid,
+                    toairportid = new.toairportid,
+                    fromfboid = new.fromfboid,
+                    tofboid = new.tofboid,
+                    aircraftid = new.aircraftid,
+                    outtime = new.outtime,
+                    offtime = new.offtime,
+                    ontime = new.ontime,
+                    intime = new.intime,
+                    actualouttime = new.actualouttime,
+                    actualofftime = new.actualofftime,
+                    actualontime = new.actualontime,
+                    actualintime = new.actualintime,
+                    flighttime = new.flighttime,
+                    blocktime = new.blocktime,
+                    status = new.status,
+                    picid = new.picid,
+                    sicid = new.sicid,
+                    fmsversion = new.fmsversion,
+                    fmsid = new.fmsid,
+                    createtime = new.createtime,
+                    pic = new.pic,
+                    sic = new.sic,
+                    fromairport = new.fromairport,
+                    toairport = new.toairport,
+                    tailnumber = new.tailnumber,
+                    isowner = new.isowner,
+                    isaclocked = new.isaclocked,
+                    iscrewlocked = new.iscrewlocked,
+                    isposition = new.isposition,
+                    tripnumber = new.tripnumber,
+                    numberpassenger = new.numberpassenger
             """)
 
             result = session.execute(copy_query)
             session.commit()
 
-            rows_copied = result.rowcount
-            logging.info(f"Successfully ported {rows_copied} records from movement_temp to movement")
+            rows_affected = result.rowcount
+            logging.info(f"Successfully ported records from movement_temp to movement: {rows_affected} rows affected (inserted or updated)")
 
-            return rows_copied
+            return rows_affected
 
         except Exception as e:
             logging.error(f"Error porting data from movement_temp to movement: {e}")
@@ -145,7 +179,7 @@ class FlightLoader:
             # Clear the demand table based on load type
             self._clear_table(session, 'demand', is_initial, start_date, end_date, 'outtime')
 
-            # Insert qualifying flights into demand table using movement_temp data
+            # Upsert qualifying flights into demand table from movement_temp
             # Criteria: isEmpty=false (isposition=0)
             demand_query = text("""
                 INSERT INTO demand (
@@ -180,17 +214,42 @@ class FlightLoader:
                     fmsversion,
                     tripid as fmsid,
                     createtime
-                FROM movement_temp
+                FROM movement_temp AS new
                 WHERE isposition = 0
+                ON DUPLICATE KEY UPDATE
+                    legnumber = VALUES(legnumber),
+                    tripnumber = new.tripnumber,
+                    requestaircrafttypeid = VALUES(requestaircrafttypeid),
+                    requestaircraftcategoryid = VALUES(requestaircraftcategoryid),
+                    fromairportid = new.fromairportid,
+                    toairportid = new.toairportid,
+                    fromfboid = new.fromfboid,
+                    tofboid = new.tofboid,
+                    aircraftid = new.aircraftid,
+                    outtime = new.outtime,
+                    intime = new.intime,
+                    primarypaxid = VALUES(primarypaxid),
+                    numberpassenger = new.numberpassenger,
+                    flighttime = new.flighttime,
+                    blocktime = new.blocktime,
+                    status = new.status,
+                    flexbefore = VALUES(flexbefore),
+                    flexafter = VALUES(flexafter),
+                    isowner = new.isowner,
+                    iswholesale = VALUES(iswholesale),
+                    isofffleet = VALUES(isofffleet),
+                    fmsversion = new.fmsversion,
+                    fmsid = new.tripid,
+                    createtime = new.createtime
             """)
 
             result = session.execute(demand_query)
             session.commit()
 
-            rows_inserted = result.rowcount
-            logging.info(f"Successfully loaded {rows_inserted} qualifying flights into demand table")
+            rows_affected = result.rowcount
+            logging.info(f"Successfully loaded qualifying flights into demand table: {rows_affected} rows affected (inserted or updated)")
 
-            return rows_inserted
+            return rows_affected
 
         except Exception as e:
             logging.error(f"Error loading qualifying flights to demand: {e}")
