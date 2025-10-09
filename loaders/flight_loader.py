@@ -5,7 +5,7 @@ import logging
 import concurrent.futures
 from typing import Optional, Dict, List
 from data_utils import safe_get, clean_string, safe_int, safe_float, parse_iso_datetime, generate_stable_id
-from datetime import datetime
+from datetime import datetime, timedelta
 from .airport_loader import AirportLoader
 from transformers.flight_transformer import FlightTransformer
 from loaders.crew_assignment_loader import CrewAssignmentLoader
@@ -29,8 +29,8 @@ class FlightLoader:
             session: Database session
             table_name: Name of table to clear
             is_initial: If True, truncate entire table; if False, delete only date range
-            start_date: Start date for incremental load (ISO format)
-            end_date: End date for incremental load (ISO format)
+            start_date: Start date for incremental load (YYYY-MM-DD format)
+            end_date: End date for incremental load (YYYY-MM-DD format)
             date_column: Column name to use for date filtering
         """
         if is_initial:
@@ -39,25 +39,18 @@ class FlightLoader:
             session.execute(truncate_query)
             logging.info(f"Truncated {table_name} table (initial load)")
         else:
-            # Delete only records in the exact datetime range used for API query
-            # This ensures we only delete records that will be replaced
-            parsed_start_date = parse_iso_datetime(start_date)
-            parsed_end_date = parse_iso_datetime(end_date)
-
-            # Format as MySQL datetime: YYYY-MM-DD HH:MM:SS
-            mysql_start = parsed_start_date.strftime('%Y-%m-%d %H:%M:%S')
-            mysql_end = parsed_end_date.strftime('%Y-%m-%d %H:%M:%S')
-
+            # Delete records in the date range using SQL DATE() function with BETWEEN
+            # This automatically handles the full day range for both dates
             delete_query = text(f"""
                 DELETE FROM {table_name}
-                WHERE {date_column} >= :start_date AND {date_column} <= :end_date
+                WHERE DATE({date_column}) BETWEEN DATE(:start_date) AND DATE(:end_date)
             """)
             delete_result = session.execute(delete_query, {
-                'start_date': mysql_start,
-                'end_date': mysql_end
+                'start_date': start_date,
+                'end_date': end_date
             })
             deleted_count = delete_result.rowcount
-            logging.info(f"Deleted {deleted_count} existing records from {table_name} in datetime range {mysql_start} to {mysql_end}")
+            logging.info(f"Deleted {deleted_count} existing records from {table_name} in date range {start_date} to {end_date}")
         session.commit()
     
     
@@ -259,109 +252,45 @@ class FlightLoader:
             session.close()
 
     def _build_aircraft_lookups(self, session) -> Dict:
-        """Build lookup dictionaries for aircraft types and categories"""
-        # Lookup by FMSID (from API)
-        type_query = text("SELECT id, fmsid FROM aircrafttype WHERE fmsid IS NOT NULL")
-        type_result = session.execute(type_query)
-        type_by_fmsid = {row[1]: row[0] for row in type_result.fetchall()}
+        """Build lookup dictionary for aircraft by tail number
 
-        category_query = text("SELECT id, fmsid FROM aircraftcategory WHERE fmsid IS NOT NULL")
-        category_result = session.execute(category_query)
-        category_by_fmsid = {row[1]: row[0] for row in category_result.fetchall()}
+        Returns a dict mapping tail number to {'type_id': ..., 'category_id': ...}
+        """
+        # Query aircraft table joined with aircrafttype to get both type and category
+        aircraft_query = text("""
+            SELECT
+                a.tailnumber,
+                a.aircrafttypeid,
+                at.aircraftcategoryid
+            FROM aircraft a
+            LEFT JOIN aircrafttype at ON a.aircrafttypeid = at.id
+            WHERE a.tailnumber IS NOT NULL
+        """)
+        aircraft_result = session.execute(aircraft_query)
 
-        # Lookup by name (for fallback)
-        type_by_name_query = text("SELECT id, name, aircraftcategoryid FROM aircrafttype WHERE name IS NOT NULL")
-        type_by_name_result = session.execute(type_by_name_query)
-        type_by_name = {row[1]: {'id': row[0], 'categoryid': row[2]} for row in type_by_name_result.fetchall()}
-
-        return {
-            'type_by_fmsid': type_by_fmsid,
-            'category_by_fmsid': category_by_fmsid,
-            'type_by_name': type_by_name
+        # Build lookup dict: tailnumber -> {'type_id': ..., 'category_id': ...}
+        aircraft_by_tailnumber = {
+            row[0]: {
+                'type_id': row[1],
+                'category_id': row[2]
+            }
+            for row in aircraft_result.fetchall()
         }
 
-    def _extract_aircraft_info_from_leg(self, leg: Dict, lookups: Dict) -> tuple:
-        """Extract aircraft type and category IDs from a flight leg
+        return {'aircraft_by_tailnumber': aircraft_by_tailnumber}
 
-        Returns:
-            tuple: (type_id, category_id, used_fallback)
-        """
-        type_id = None
-        category_id = None
-        used_fallback = False
-
-        # Primary: Try flightLegDemandRequest
-        demand_request = leg.get('flightLegDemandRequest')
-        if demand_request and isinstance(demand_request, dict):
-            aircraft_model_id = demand_request.get('aircraftModelID')
-            aircraft_category_id = demand_request.get('aircraftCategoryID')
-
-            type_id = lookups['type_by_fmsid'].get(aircraft_model_id)
-            category_id = lookups['category_by_fmsid'].get(aircraft_category_id)
-
-        # Fallback: Use aircraft.aircraftType name lookup
-        if not type_id and not category_id:
-            aircraft = leg.get('aircraft', {})
-            if aircraft:
-                aircraft_type_name = aircraft.get('aircraftType')
-                if aircraft_type_name:
-                    type_info = lookups['type_by_name'].get(aircraft_type_name)
-                    if type_info:
-                        type_id = type_info['id']
-                        category_id = type_info['categoryid']
-                        used_fallback = True
-
-        return type_id, category_id, used_fallback
-
-    def _process_trip_legs(self, tripid: str, legs: List[Dict], lookups: Dict) -> List[Dict]:
-        """Process all legs for a trip and extract aircraft info
-
-        Returns:
-            List of updates: [{'demandid': ..., 'type_id': ..., 'category_id': ...}, ...]
-        """
-        updates = []
-
-        trip_data = self.api_client.get_trip(tripid)
-        if not trip_data:
-            logging.warning(f"No trip data returned for tripid {tripid}")
-            return updates
-
-        flight_legs = trip_data if isinstance(trip_data, list) else []
-        if not flight_legs:
-            logging.warning(f"No flight legs in trip {tripid}")
-            return updates
-
-        # Create leg lookup by ID for faster matching
-        legs_by_id = {leg.get('id'): leg for leg in flight_legs}
-
-        for leg_info in legs:
-            fmsid = leg_info['fmsid']
-            demandid = leg_info['demandid']
-
-            matching_leg = legs_by_id.get(fmsid)
-            if not matching_leg:
-                logging.warning(f"Could not find flight leg {fmsid} in trip {tripid}")
-                continue
-
-            type_id, category_id, _ = self._extract_aircraft_info_from_leg(matching_leg, lookups)
-
-            if type_id or category_id:
-                updates.append({
-                    'demandid': demandid,
-                    'type_id': type_id,
-                    'category_id': category_id
-                })
-
-        return updates
-
-    def populate_demand_aircraft_requests(self) -> int:
+    def populate_demand_aircraft_requests(self, start_date: str, end_date: str) -> int:
         """Populate requestAircraftTypeId and requestAircraftCategoryId in demand table
 
         This method:
-        1. Queries demand records from movement_temp
-        2. Fetches trip details from API
-        3. Extracts aircraft type/category info (with fallback to aircraft.aircraftType)
+        1. Fetches all trips from the API for the date range (with 10-day lookback)
+        2. Matches trip.id from API to movement_temp.tripid
+        3. Looks up aircraft info by tail number (trip.aircraft)
         4. Updates demand table with the extracted info
+
+        Args:
+            start_date: Start date in ISO format
+            end_date: End date in ISO format
         """
         if not self.api_client:
             logging.warning("API client not provided, skipping demand aircraft request population")
@@ -371,48 +300,85 @@ class FlightLoader:
         try:
             session = self.db_manager.get_session()
 
-            # Step 1: Query demand records
+            # Step 1: Fetch all trips for the date range
+            # Subtract 10 days from start date to capture trips created earlier but not yet flying
+            # Parse to datetime, subtract days, then format back to YYYY-MM-DD
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            adjusted_start_dt = start_dt - timedelta(days=10)
+            adjusted_start_str = adjusted_start_dt.strftime('%Y-%m-%d')
+
+            logging.info(f"Fetching trips from {adjusted_start_str} (10 days before {start_date}) to {end_date}")
+            trips = self.api_client.get_trips(adjusted_start_str, end_date)
+
+            if not trips:
+                logging.info("No trips returned from API")
+                return 0
+
+            logging.info(f"Found {len(trips)} trips from API")
+
+            # Step 2: Build aircraft lookups
+            lookups = self._build_aircraft_lookups(session)
+            aircraft_by_tailnumber = lookups['aircraft_by_tailnumber']
+
+            # Step 3: Query movement_temp to get demandid for each tripid
             query = text("""
-                SELECT DISTINCT demandid, fmsid, tripid
+                SELECT DISTINCT demandid, tripid
                 FROM movement_temp
                 WHERE demandid IS NOT NULL AND tripid IS NOT NULL
             """)
             result = session.execute(query)
-            records = result.fetchall()
+            movement_records = result.fetchall()
 
-            if not records:
-                logging.info("No demand records found in movement_temp")
-                return 0
+            # Build a map: tripid -> list of demandids (one trip can have multiple legs/demands)
+            tripid_to_demandids = {}
+            for demandid, tripid in movement_records:
+                if tripid not in tripid_to_demandids:
+                    tripid_to_demandids[tripid] = []
+                tripid_to_demandids[tripid].append(demandid)
 
-            logging.info(f"Found {len(records)} demand records to process")
+            total_demand_count = sum(len(demands) for demands in tripid_to_demandids.values())
+            logging.info(f"Found {total_demand_count} demand records across {len(tripid_to_demandids)} unique trips in movement_temp")
 
-            # Step 2: Build lookups
-            lookups = self._build_aircraft_lookups(session)
-
-            # Step 3: Group records by trip
-            trips_map = {}
-            for demandid, fmsid, tripid in records:
-                if tripid not in trips_map:
-                    trips_map[tripid] = []
-                trips_map[tripid].append({'demandid': demandid, 'fmsid': fmsid})
-
-            logging.info(f"Processing {len(trips_map)} unique trips")
-
-            # Step 4: Process trips and collect updates
+            # Step 4: Match trips to movement_temp and prepare updates
             all_updates = []
-            for tripid, legs in trips_map.items():
-                try:
-                    updates = self._process_trip_legs(tripid, legs, lookups)
-                    all_updates.extend(updates)
-                except Exception as e:
-                    logging.error(f"Error processing trip {tripid}: {e}")
+            for trip in trips:
+                tripid = trip.get('id')
+                aircraft_tailnumber = trip.get('aircraft')
+
+                if not tripid or not aircraft_tailnumber:
                     continue
+
+                # Match trip.id to movement_temp.tripid (can have multiple demandids per trip)
+                demandids = tripid_to_demandids.get(tripid)
+                if not demandids:
+                    logging.debug(f"No matching demandids for tripid {tripid}")
+                    continue
+
+                # Look up aircraft info by tail number
+                aircraft_info = aircraft_by_tailnumber.get(aircraft_tailnumber)
+                if not aircraft_info:
+                    logging.warning(f"No aircraft info found for tail number {aircraft_tailnumber}")
+                    continue
+
+                type_id = aircraft_info.get('type_id')
+                category_id = aircraft_info.get('category_id')
+
+                # Create updates for ALL demand records associated with this trip
+                if type_id or category_id:
+                    for demandid in demandids:
+                        all_updates.append({
+                            'demandid': demandid,
+                            'type_id': type_id,
+                            'category_id': category_id
+                        })
 
             if not all_updates:
                 logging.info("No aircraft request updates to apply")
                 return 0
 
-            # Step 5: Apply updates to demand table
+            logging.info(f"Prepared {len(all_updates)} updates for demand table")
+
+            # Step 6: Apply updates to demand table
             update_count = 0
             for update in all_updates:
                 try:
@@ -532,7 +498,7 @@ class FlightLoader:
 
             # Step 3.5: Populate aircraft request info in demand table
             logging.info("Step 3.5: Populating aircraft request info in demand table")
-            aircraft_request_count = self.populate_demand_aircraft_requests()
+            aircraft_request_count = self.populate_demand_aircraft_requests(start_date, end_date)
             results['demand_aircraft_requests_populated'] = aircraft_request_count
 
             # Step 4: Transfer crew assignments from temp to target table (create shifts)

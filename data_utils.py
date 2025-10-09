@@ -9,6 +9,12 @@ def format_iso_datetime(dt: datetime) -> str:
     """
     return dt.strftime('%Y-%m-%dT%H:%M:%S.%fZ')[:-3] + 'Z'
 
+def format_date_only(dt: datetime) -> str:
+    """
+    Format datetime to date-only format for API queries: YYYY-MM-DD
+    """
+    return dt.strftime('%Y-%m-%d')
+
 def get_utc_now() -> datetime:
     """Get current UTC datetime"""
     return datetime.utcnow()
@@ -22,57 +28,57 @@ class DateRangeManager:
     def get_initial_load_dates(self) -> Tuple[str, str]:
         """
         Get date range for initial load: last 2 months + next 10 days
-        Returns ISO format dates (YYYY-MM-DDTHH:MM:SS.sssZ)
+        Returns date-only format (YYYY-MM-DD)
         """
         now = get_utc_now()
-        
+
         # Calculate start date (2 months ago)
         start_date = now - timedelta(days=self.config.INITIAL_LOAD_MONTHS_PAST * 30)
-        
+
         # Calculate end date (10 days from now)
         end_date = now + timedelta(days=self.config.INITIAL_LOAD_DAYS_FUTURE)
-        
-        start_str = format_iso_datetime(start_date)
-        end_str = format_iso_datetime(end_date)
-        
+
+        start_str = format_date_only(start_date)
+        end_str = format_date_only(end_date)
+
         logging.info(f"Initial load date range: {start_str} to {end_str}")
         return start_str, end_str
     
     def get_incremental_load_dates(self) -> Tuple[str, str]:
         """
         Get date range for incremental load: last 3 days + next 10 days
-        Returns ISO format dates (YYYY-MM-DDTHH:MM:SS.sssZ)
+        Returns date-only format (YYYY-MM-DD)
         """
         now = get_utc_now()
-        
+
         # Calculate start date (3 days ago)
         start_date = now - timedelta(days=self.config.REFRESH_DAYS_PAST)
-        
+
         # Calculate end date (10 days from now)
         end_date = now + timedelta(days=self.config.REFRESH_DAYS_FUTURE)
-        
-        start_str = format_iso_datetime(start_date)
-        end_str = format_iso_datetime(end_date)
-        
+
+        start_str = format_date_only(start_date)
+        end_str = format_date_only(end_date)
+
         logging.info(f"Incremental load date range: {start_str} to {end_str}")
         return start_str, end_str
     
     def get_last_activity_date(self, is_initial_load: bool = False) -> str:
         """
         Get last activity date for personnel queries
-        Returns ISO format date (YYYY-MM-DDTHH:MM:SS.sssZ)
+        Returns date-only format (YYYY-MM-DD)
         """
         now = get_utc_now()
-        
+
         if is_initial_load:
             # For initial load, go back 2 months
             last_activity = now - timedelta(days=self.config.INITIAL_LOAD_MONTHS_PAST * 30)
         else:
             # For incremental load, go back 3 days
             last_activity = now - timedelta(days=self.config.REFRESH_DAYS_PAST)
-        
-        last_activity_str = format_iso_datetime(last_activity)
-        
+
+        last_activity_str = format_date_only(last_activity)
+
         logging.info(f"Last activity date: {last_activity_str}")
         return last_activity_str
 
@@ -105,25 +111,29 @@ def safe_float(value) -> Optional[float]:
         return None
 
 def parse_iso_datetime(iso_string: str) -> Optional[datetime]:
-    """Parse ISO datetime string to datetime object"""
+    """Parse ISO datetime string to datetime object
+
+    Supports both full datetime and date-only formats
+    """
     if not iso_string:
         return None
-    
+
     try:
         # Handle various ISO formats
         formats = [
             '%Y-%m-%dT%H:%M:%S.%fZ',
             '%Y-%m-%dT%H:%M:%SZ',
             '%Y-%m-%dT%H:%M:%S',
-            '%Y-%m-%d %H:%M:%S'
+            '%Y-%m-%d %H:%M:%S',
+            '%Y-%m-%d'  # Date-only format
         ]
-        
+
         for fmt in formats:
             try:
                 return datetime.strptime(iso_string, fmt)
             except ValueError:
                 continue
-                
+
         logging.warning(f"Could not parse datetime: {iso_string}")
         return None
         

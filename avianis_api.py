@@ -120,13 +120,13 @@ class AvianisAPIClient:
             if not self.auth_manager.is_authenticated():
                 if not self.authenticate():
                     return None
-            
+
             # Select API URL based on version
             api_url = self.api_url_v1 if api_version == 'v1' else self.api_url_v2
             url = f'{api_url}/{endpoint.lstrip("/")}'
             logging.info(f"Making API request to: {url} with params: {params}")
             response = self.session.get(url, params=params, timeout=timeout)
-            
+
             if response.status_code == 200:
                 data = response.json()
                 logging.info(f"API request successful: {url} returned {len(data) if isinstance(data, list) else 'non-list'} records")
@@ -139,14 +139,50 @@ class AvianisAPIClient:
                         data = response.json()
                         logging.info(f"API request successful after re-auth: {url} returned {len(data) if isinstance(data, list) else 'non-list'} records")
                         return data
-            
+
             logging.error(f"API request failed: {response.status_code} - {url} - {response.text}")
             return None
-            
+
         except Exception as e:
             logging.error(f"Error fetching data from {endpoint}: {e}")
             return None
-    
+
+    def _get_paginated_data(self, endpoint: str, params: Optional[Dict] = None, api_version: str = 'v1', page_size: int = 1000, resource_name: str = 'records', timeout: tuple = (5, 20)) -> Optional[List[Dict]]:
+        """Generic method to fetch paginated data from Avianis API
+
+        Args:
+            endpoint: API endpoint to call
+            params: Base parameters for the API call (will add 'Page' parameter)
+            api_version: API version ('v1' or 'v2')
+            page_size: Expected page size (default 1000)
+            resource_name: Name of resource for logging (e.g., 'quotes', 'flight legs')
+            timeout: Timeout tuple (connect_timeout, read_timeout) in seconds (default (5, 20))
+
+        Returns:
+            List of all records across all pages, or None if no data
+        """
+        all_data = []
+        page = 1
+        params = params or {}
+
+        while True:
+            params['Page'] = page
+
+            data = self.get_data(endpoint, params, api_version=api_version, timeout=timeout)
+            if not data or len(data) == 0:
+                break
+
+            all_data.extend(data)
+            logging.info(f"Fetched page {page}: {len(data)} {resource_name} (total: {len(all_data)})")
+
+            # If we got fewer records than the page size, we're done
+            if len(data) < page_size:
+                break
+
+            page += 1
+
+        return all_data if all_data else None
+
     def create_worker_client(self):
         """Create a new API client instance for parallel processing that shares authentication"""
         worker_client = AvianisAPIClient(self.auth_manager)
@@ -177,32 +213,32 @@ class AvianisAPIClient:
         """Fetch trip details by trip ID"""
         return self.get_data(f'/trip/{trip_id}/Itinerary?includeCancelledLegs=false', api_version='v2')
 
+    def get_quotes(self, start_date: str, end_date: str) -> Optional[List[Dict]]:
+        """Fetch quotes in a date range with pagination
+
+        Note: Uses extended timeout (60s read) as quote endpoint can be slow
+        """
+        params = {
+            'StartDate': start_date,
+            'EndDate': end_date
+        }
+        return self._get_paginated_data('/quote', params, api_version='v1', resource_name='quotes', timeout=(5, 60))
+
+    def get_trips(self, start_date: str, end_date: str) -> Optional[List[Dict]]:
+        """Fetch trips in a date range with pagination"""
+        params = {
+            'StartDate': start_date,
+            'EndDate': end_date
+        }
+        return self._get_paginated_data('/trip', params, api_version='v1', resource_name='trips')
+
     def get_flight_legs(self, start_date: str, end_date: str) -> Optional[List[Dict]]:
         """Fetch flight legs in a date range with pagination"""
-        all_flights = []
-        page = 1
-
-        while True:
-            params = {
-                'StartDate': start_date,
-                'EndDate': end_date,
-                'Page': page
-            }
-
-            data = self.get_data('/flightleg', params, api_version='v1')
-            if not data or len(data) == 0:
-                break
-
-            all_flights.extend(data)
-            logging.info(f"Fetched page {page}: {len(data)} flight legs (total: {len(all_flights)})")
-
-            # If we got fewer records than the API's page size (1000), we're done
-            if len(data) < 1000:
-                break
-
-            page += 1
-
-        return all_flights if all_flights else None
+        params = {
+            'StartDate': start_date,
+            'EndDate': end_date
+        }
+        return self._get_paginated_data('/flightleg', params, api_version='v1', resource_name='flight legs')
     
     def get_crew_assignment(self, aircraft_id: str, start_date: str, end_date: str) -> Optional[List[Dict]]:
         """Fetch crew assignment for a specific aircraft in a date range"""
@@ -225,29 +261,10 @@ class AvianisAPIClient:
     
     def get_personnel_events(self, last_activity_date: str) -> Optional[List[Dict]]:
         """Fetch all personnel events with last activity date filter and pagination"""
-        all_events = []
-        page = 1
-
-        while True:
-            params = {
-                'LastActivityDate': last_activity_date,
-                'Page': page
-            }
-
-            data = self.get_data('/personnelEvent', params, api_version='v1')
-            if not data or len(data) == 0:
-                break
-
-            all_events.extend(data)
-            logging.info(f"Fetched page {page}: {len(data)} personnel events (total: {len(all_events)})")
-
-            # If we got fewer records than the API's page size (1000), we're done
-            if len(data) < 1000:
-                break
-
-            page += 1
-
-        return all_events if all_events else None
+        params = {
+            'LastActivityDate': last_activity_date
+        }
+        return self._get_paginated_data('/personnelEvent', params, api_version='v1', resource_name='personnel events')
     
     def close(self):
         """Close the session"""
