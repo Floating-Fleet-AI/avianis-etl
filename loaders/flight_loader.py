@@ -404,7 +404,7 @@ class FlightLoader:
         if not flight_data:
             return None, None
         
-        from data_utils import parse_iso_datetime
+        
         dates = []
         
         for flight in flight_data:

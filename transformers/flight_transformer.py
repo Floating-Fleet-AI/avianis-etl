@@ -88,6 +88,49 @@ class FlightTransformer:
             'raw_flight': flight
         }
     
+    def calculate_oooi_times(self, shared_data: Dict) -> Dict:
+        """
+        Calculate OOOI times with 6-minute padding
+
+        Returns dict with:
+        - outtime: scheduled_departure
+        - offtime: outtime + 6 minutes
+        - ontime: intime - 6 minutes
+        - intime: scheduled_arrival
+        - flight_time: ontime - offtime (in minutes)
+        - block_time: intime - outtime (in minutes)
+        """
+        
+        outtime = shared_data['scheduled_departure']
+        intime = shared_data['scheduled_arrival']
+
+        # Calculate offtime and ontime with 6-minute padding
+        offtime = None
+        ontime = None
+        if outtime:
+            offtime = outtime + pd.Timedelta(minutes=6)
+        if intime:
+            ontime = intime - pd.Timedelta(minutes=6)
+
+        # Calculate flight_time = ontime - offtime (in minutes)
+        flight_time = None
+        if ontime and offtime:
+            flight_time = (ontime - offtime).total_seconds() / 60
+
+        # Calculate block_time = intime - outtime (in minutes)
+        block_time = None
+        if intime and outtime:
+            block_time = (intime - outtime).total_seconds() / 60
+
+        return {
+            'outtime': outtime,
+            'offtime': offtime,
+            'ontime': ontime,
+            'intime': intime,
+            'flight_time': flight_time,
+            'block_time': block_time
+        }
+
     def build_movement_record(self, shared_data: Dict, lookups: Dict[str, Dict[str, int]]) -> Dict:
         """Build a movement record from shared flight data and lookups"""
         flight = shared_data['raw_flight']
@@ -107,37 +150,31 @@ class FlightTransformer:
         # Get crew IDs
         pic_id = crew_lookup.get(shared_data['pic_name']) if shared_data['pic_name'] else None
         sic_id = crew_lookup.get(shared_data['sic_name']) if shared_data['sic_name'] else None
-        
-        # Calculate offtime and ontime with 6-minute padding
-        offtime = None
-        ontime = None
-        if shared_data['scheduled_departure']:
-            offtime = shared_data['scheduled_departure'] + pd.Timedelta(minutes=6)
-        if shared_data['scheduled_arrival']:
-            ontime = shared_data['scheduled_arrival'] - pd.Timedelta(minutes=6)
-        
+
+        oooi_times = self.calculate_oooi_times(shared_data)
+
         id = shared_data['stable_id']
         passengerCount = safe_get(flight, 'passengerCount', 0)
-        isEmpty = flight.get('isEmpty') 
+        isEmpty = flight.get('isEmpty')
         
         return {
-            'id': id, 
+            'id': id,
             'demandid': id if isEmpty is False else None,
             'fromairportid': from_airport_id,
             'toairportid': to_airport_id,
             'fromfboid': safe_int(safe_get(flight, 'departureFBOHandlerID')),
             'tofboid': safe_int(safe_get(flight, 'arrivalFBOHandlerID')),
             'aircraftid': aircraft_id,
-            'outtime': shared_data['scheduled_departure'],
-            'offtime': offtime,
-            'ontime': ontime,
-            'intime': shared_data['scheduled_arrival'],
+            'outtime': oooi_times['outtime'],
+            'offtime': oooi_times['offtime'],
+            'ontime': oooi_times['ontime'],
+            'intime': oooi_times['intime'],
             'actualouttime': shared_data['out_blocks'],
             'actualofftime': shared_data['actual_departure'],
             'actualontime': shared_data['actual_arrival'],
             'actualintime': shared_data['in_blocks'],
-            'flighttime': safe_float(safe_get(flight, 'estimatedFlightTime')) ,
-            'blocktime': safe_float(safe_get(flight, 'estimatedBlockTime')),
+            'flighttime': oooi_times['flight_time'],
+            'blocktime': oooi_times['block_time'],
             'status': clean_string(safe_get(flight, 'status')),
             'picid': pic_id,
             'sicid': sic_id,
