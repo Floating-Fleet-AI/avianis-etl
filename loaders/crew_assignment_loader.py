@@ -130,13 +130,26 @@ class CrewAssignmentLoader:
             inserted_count = insert_result.rowcount
             
             session.commit()
-            
+
             logging.info(f"Transferred {inserted_count} aggregated crew assignments (shifts) from temp to target table")
+
+            # Garbage collect - truncate temp table after successful transfer
+            session.execute(text("TRUNCATE TABLE crewassignment_temp"))
+            session.commit()
+            logging.info("Garbage collected crewassignment_temp table")
+
             return inserted_count
-            
+
         except Exception as e:
             session.rollback()
             logging.error(f"Error transferring crew assignments from temp to target: {e}")
+            # Clean up temp table even on error
+            try:
+                session.execute(text("TRUNCATE TABLE crewassignment_temp"))
+                session.commit()
+                logging.info("Garbage collected crewassignment_temp table after error")
+            except:
+                pass  # Don't fail on cleanup
             raise
         finally:
             session.close()

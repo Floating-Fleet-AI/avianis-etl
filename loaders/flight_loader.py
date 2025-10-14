@@ -513,8 +513,29 @@ class FlightLoader:
 
             logging.info(f"Flight schedule processing complete: {temp_count} temp, {movement_count} movement, {demand_count} demand ({aircraft_request_count} with aircraft requests), {crew_assignment_count} crew assignment records, {results.get('crew_shifts_loaded', 0)} crew shifts (single transform + parallel loading + shift aggregation)")
 
+            # Garbage collect temp tables
+            session = self.db_manager.get_session()
+            try:
+                session.execute(text("TRUNCATE TABLE movement_temp"))
+                session.commit()
+                logging.info("Garbage collected movement_temp table")
+            except Exception as cleanup_error:
+                logging.warning(f"Failed to garbage collect movement_temp: {cleanup_error}")
+            finally:
+                session.close()
+
             return results
 
         except Exception as e:
             logging.error(f"Error in flight schedule processing workflow: {e}")
+            # Clean up temp table even on error
+            session = self.db_manager.get_session()
+            try:
+                session.execute(text("TRUNCATE TABLE movement_temp"))
+                session.commit()
+                logging.info("Garbage collected movement_temp table after error")
+            except:
+                pass  # Don't fail on cleanup
+            finally:
+                session.close()
             raise

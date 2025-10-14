@@ -69,9 +69,9 @@ usage() {
     echo
     echo "Examples:"
     echo "  $0 test full                         # Run complete ETL for test operator"
-    echo "  $0 thrive setup                      # Load aircraft and crew data for thrive"
+    echo "  $0 jetaccess setup                      # Load aircraft and crew data for jetaccess"
     echo "  $0 test aircraft                     # Load aircraft data only for test"
-    echo "  $0 thrive crew                       # Load crew data only for thrive"
+    echo "  $0 jetaccess crew                       # Load crew data only for jetaccess"
     echo
 }
 
@@ -168,6 +168,9 @@ case "${1:-full}" in
         ;;
     "flight-data")
         run_etl "--flight-data-only"
+        ;;
+    "aircraft-events")
+        run_etl "--aircraft-events-only"
         ;;
     "crew-events")
         run_etl "--crew-events-only"

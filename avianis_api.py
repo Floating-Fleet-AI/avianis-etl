@@ -265,7 +265,15 @@ class AvianisAPIClient:
             'LastActivityDate': last_activity_date
         }
         return self._get_paginated_data('/personnelEvent', params, api_version='v1', resource_name='personnel events')
-    
+
+    def get_offline_events(self, start_date: str, end_date: str) -> Optional[List[Dict]]:
+        """Fetch offline events (aircraft maintenance events) in a date range"""
+        params = {
+            'StartDate': start_date,
+            'EndDate': end_date
+        }
+        return self.get_data('/offLineEvent', params, api_version='v1')
+
     def close(self):
         """Close the session"""
         self.session.close()

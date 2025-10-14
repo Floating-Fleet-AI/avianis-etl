@@ -14,6 +14,7 @@ from loaders.aircraft_loader import AircraftLoader
 from loaders.crew_loader import CrewLoader
 from loaders.flight_loader import FlightLoader
 from loaders.crew_events_loader import CrewEventsLoader
+from loaders.aircraft_event_loader import AircraftEventLoader
 from database import DatabaseManager
 from sqlalchemy import text
 
@@ -30,6 +31,7 @@ class AvianisETL:
         self.crew_loader = CrewLoader(self.db_manager)
         self.flight_loader = FlightLoader(self.db_manager, self.api_client)
         self.crew_events_loader = CrewEventsLoader(self.db_manager)
+        self.aircraft_event_loader = AircraftEventLoader(self.db_manager)
         self.date_manager = DateRangeManager(self.config)
         
         # Log operator information
@@ -211,17 +213,36 @@ class AvianisETL:
             else:
                 logging.warning("No flight leg data received from API")
 
-            # Load aircraft events
-            event_data = self.api_client.get_aircraft_events(start_date, end_date)
-            if event_data:
-                logging.info(f"Retrieved {len(event_data)} aircraft event records")
-                # TODO: Implement aircraft event loader
-
         except Exception as e:
             logging.error(f"Error loading flight data: {e}")
             raise
     
     
+    def load_aircraft_events(self):
+        """Load aircraft maintenance events (offline events)"""
+        logging.info("Starting aircraft events load...")
+
+        try:
+            if not self.api_client.authenticate():
+                raise Exception("Failed to authenticate with Avianis API")
+
+            # Get load context based on aircraftevent table
+            is_initial, start_date, end_date = self.get_load_context('aircraftevent')
+
+            offline_event_data = self.api_client.get_offline_events(start_date, end_date)
+            if offline_event_data:
+                logging.info(f"Retrieved {len(offline_event_data)} offline event records")
+                event_results = self.aircraft_event_loader.load_aircraft_events(
+                    offline_event_data, is_initial, start_date, end_date
+                )
+                logging.info(f"Aircraft event loading completed: {event_results.get('events_loaded', 0)} events loaded")
+            else:
+                logging.warning("No offline event data received from API")
+
+        except Exception as e:
+            logging.error(f"Error loading aircraft events: {e}")
+            raise
+
     def load_crew_events(self):
         """Load crew events"""
         logging.info("Starting crew events load...")
@@ -267,13 +288,14 @@ class AvianisETL:
     def run_full_etl(self):
         """Run complete ETL pipeline"""
         logging.info("Running full ETL pipeline...")
-        
+
         try:
-            self.load_flight_data()  # Now includes crew assignments processing
+            self.load_flight_data()
+            self.load_aircraft_events()
             self.load_crew_events()
-            
+
             logging.info("Full ETL pipeline completed successfully")
-            
+
         except Exception as e:
             logging.error(f"Full ETL pipeline failed: {e}")
             raise
@@ -290,6 +312,7 @@ def main():
     parser.add_argument('--aircraft-only', action='store_true', help='Load aircraft data only')
     parser.add_argument('--crew-only', action='store_true', help='Load crew data only')
     parser.add_argument('--flight-data-only', action='store_true', help='Load flight data and crew assignments only')
+    parser.add_argument('--aircraft-events-only', action='store_true', help='Load aircraft maintenance events only')
     parser.add_argument('--crew-events-only', action='store_true', help='Load crew events only')
     
     args = parser.parse_args()
@@ -305,6 +328,8 @@ def main():
             etl.load_crew_data()
         elif args.flight_data_only:
             etl.load_flight_data()
+        elif args.aircraft_events_only:
+            etl.load_aircraft_events()
         elif args.crew_events_only:
             etl.load_crew_events()
         else:
